@@ -10,6 +10,7 @@ extension TaskStore {
         // A completed or failed experiment with this input is not silently run
         // again. A changed input has its own immutable task/revision history.
         if job.h3FidelityChecks?.contains(where:{ $0.kind == kind && $0.originalSHA256 == input.originalSHA256 && $0.recipeVersion == H3Fidelity.recipeVersion }) == true { return false }
+        if kind == .motionBaseDetail { return H3Fidelity.baseMotionBaseline(in:job,originalSHA256:input.originalSHA256) != nil }
         if kind == .motionDetail {
             return job.h3FidelityChecks?.contains(where:{ $0.kind == .codecDetail && $0.status == "completed" && $0.recipeVersion == H3Fidelity.recipeVersion && $0.originalSHA256 == input.originalSHA256 }) == true
         }
@@ -22,13 +23,14 @@ extension TaskStore {
         do {
             let executableHash = try await Task.detached(priority:.utility) { [executable] in try WorkspaceDigest.sha256(executable) }.value
             guard !shuttingDown,fidelityJobID == id else { throw StudioError.invalid("保真准备已取消。") }
-            let request = H3FidelityRequest(id:UUID(),appJobID:id,workspace:root.path,owner:owner,sessionID:sessionID,kind:kind,binding:binding,appExecutableSHA256:executableHash)
+            let baseline = kind == .motionBaseDetail ? H3Fidelity.baseMotionBaseline(in:state.jobs[index],originalSHA256:binding.appFirstTask!.proposal.input!.originalSHA256) : nil
+            let request = H3FidelityRequest(id:UUID(),appJobID:id,workspace:root.path,owner:owner,sessionID:sessionID,kind:kind,binding:binding,appExecutableSHA256:executableHash,baseline:baseline)
             let encoder = JSONEncoder();encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
             let bytes = try encoder.encode(request)
             _ = try H3Files.inside(request.directory,root.path + "/h3-fidelity")
             try FileManager.default.createDirectory(atPath:request.directory,withIntermediateDirectories:true)
             try bytes.write(to:request.url,options:.withoutOverwriting)
-            let record = H3FidelityRecord(id:request.id,kind:kind,directory:request.directory,requestSHA256:H3ABConfigurationReader.digest(bytes),originalSHA256:binding.appFirstTask!.proposal.input!.originalSHA256)
+            let record = H3FidelityRecord(id:request.id,kind:kind,directory:request.directory,requestSHA256:H3ABConfigurationReader.digest(bytes),originalSHA256:binding.appFirstTask!.proposal.input!.originalSHA256,baseline:baseline)
             if state.jobs[index].h3FidelityChecks == nil { state.jobs[index].h3FidelityChecks = [] }
             state.jobs[index].h3FidelityChecks?.append(record)
             state.jobs[index].logTail.append("App 开始" + kind.title + "；保留原候选与拒绝，实验不计入视频分段，不授权续段。")

@@ -7,9 +7,9 @@ enum H3FidelityFinding: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     static func choices(for kind: H3FidelityKind) -> [Self] {
         allCases.filter {
-            if $0 == .motionIdentityDrift || $0 == .actionMismatch { return kind == .motionDetail }
+            if $0 == .motionIdentityDrift || $0 == .actionMismatch { return kind.isMotion }
             if $0 == .detailImproved { return kind == .codecDetail }
-            if $0 == .codecDistortion { return kind != .motionDetail }
+            if $0 == .codecDistortion { return !kind.isMotion }
             return true
         }
     }
@@ -52,7 +52,7 @@ struct H3FidelityGuidance: Codable, Equatable {
         case .actionMismatch:
             return .init(title:"未通过：动作或肢体不符合要求",codeHandling:"应用可拆分动作、绑定明确起止姿态；不能靠文字保证复杂碰撞中的肢体始终正确。",nextStep:"先修订单次接触动作，必要时拆成接近、碰撞、回弹三段，各段独立检查。",requiredInputs:shot == 26 ? "保持同脸同构图的接触姿态与回弹姿态参考；现有READY只作起势。" : "同一角色、同一构图的起势、关键接触与收势参考。",promptPurpose:"视频动作修订草稿，尚未应用",prompt:motionPrompt(shot:shot))
         case .samplePreserved:
-            return .init(title:"样本已检查，完整候选仍待验收",codeHandling:"所看样本暂未发现明显身份变化；这不代表其余帧、完整动作或续段已通过。",nextStep:kind == .motionDetail ? "检查全部22帧和连续播放，再决定是否进行完整段试验。" : "继续原生运动对照，确认动作生成不会重新改变人脸。",requiredInputs:"当前无需新素材；先完成已有输出的检查。",blocksQuality:false)
+            return .init(title:"样本已检查，完整候选仍待验收",codeHandling:"所看样本暂未发现明显身份变化；这不代表其余帧、完整动作或续段已通过。",nextStep:kind.isMotion ? "检查全部22帧和连续播放，再决定是否进行完整段试验。" : "继续原生运动对照，确认动作生成不会重新改变人脸。",requiredInputs:"当前无需新素材；先完成已有输出的检查。",blocksQuality:false)
         case .needsMoreReview:
             return .init(title:"尚不能判断人脸是否保持",codeHandling:"技术完成只证明输出可读，不能自动证明脸部相同。",nextStep:"查看原尺寸的原图、编解码结果和生成帧，逐项记录具体差异。",requiredInputs:"无需先补图；先补充实际像素检查与差异位置。")
         }

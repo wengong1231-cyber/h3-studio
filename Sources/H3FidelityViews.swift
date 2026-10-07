@@ -16,7 +16,7 @@ struct H3FidelitySheet: View {
                 Text((job?.shortID ?? "") + " · 人脸保真对照").font(.title2)
                 Spacer();Button("关闭") { dismiss() }
             }
-            Text("先检查静态编解码损失，再检查运动生成漂移。编解码对照重复同一原图34次，按引擎要求编码后解出22帧，不生成动作。1536输入直接来自完整原图；运动短段沿用原种子、提示词和4步。高分辨率不是身份保证，对照不能作为已接受端点。")
+            Text("先检查静态编解码损失，再检查运动生成漂移。1536输入直接来自完整原图。原模型8步对照沿用此前短段的原图、尺寸、种子和提示词，只移除Turbo加速适配并改为8步，用于检查加速方案是否加重失真，耗时会增加。只有此前运动漂移已留证才可开始；每种方案同图只运行一次，对照不能作为已接受端点。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             HStack {
                 ForEach(H3FidelityKind.allCases) { kind in
@@ -49,7 +49,7 @@ struct H3FidelitySheet: View {
                                 Picker("对照帧",selection:$sample) { Text("首帧 raw0").tag(0);Text("中间 raw10").tag(10);Text("末帧 raw21").tag(21) }.pickerStyle(.segmented)
                                 HStack(alignment:.top) {
                                     image(record.inputPath,title:"本次实际输入",revision:record.requestSHA256)
-                                    image(record.framePath(sample),title:record.kind == .motionDetail ? "本次原生 raw\(sample)" : "静态编解码 raw\(sample)",revision:record.reportSHA256 ?? "")
+                                    image(record.framePath(sample),title:record.kind.isMotion ? "本次原生 raw\(sample)" : "静态编解码 raw\(sample)",revision:record.reportSHA256 ?? "")
                                 }
                                 if let clip = record.clipPath { CandidateVideoPreview(path:clip,title:(job?.shortID ?? "") + " · " + record.kind.title).frame(height:220) }
                                 if let note = record.observation {

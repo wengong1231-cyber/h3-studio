@@ -25,7 +25,7 @@ import ImageIO
                 let allPorts = stages.flatMap { $0["iports"] as! [[String:Any]] }
                 try check("\(kind.rawValue)管线无悬空端口",allPorts.allSatisfy { let id = $0["src"] as! String;return id.isEmpty || ids.contains(id) },"every nonempty source belongs to graph")
                 try check("\(kind.rawValue)没有二次裁剪",!ids.contains("normalize-A") && !ids.contains("load-B"),"actual prepared image and no failed tail frame")
-                if kind != .motionDetail {
+                if !kind.isMotion {
                     try check("\(kind.rawValue)只运行静态片编解码",ids == Set(["model-select","load-A","stack-static-clip","vae-encode-A","vae-decode","save-detail-frames"]),"no text, DiT or video save in codec comparison")
                     let urls = (stages.first { $0["id"] as? String == "load-A" }!["config"] as! [String:Any])["url"] as? [String]
                     let stack = stages.first { $0["id"] as? String == "stack-static-clip" }!
@@ -34,9 +34,44 @@ import ImageIO
                 } else {
                     let config = stages.first { $0["id"] as? String == "generate-video" }!["config"] as! [String:Any]
                     try check("短段改变实际原生分辨率",config["width"] as? Int == 1536 && config["height"] as? Int == 896 && config["frames"] as? Int == 22,"native sample at bounded 22 frames")
-                    try check("保留种子与步数隔离对照",config["seed"] as? Int == proposal.seed && config["steps"] as? Int == proposal.profile.steps,"no silent prompt/step change")
+                    try check("\(kind.rawValue)种子与明确步数",config["seed"] as? Int == proposal.seed && config["steps"] as? Int == (kind == .motionBaseDetail ? 8 : proposal.profile.steps),"same seed; only base-model comparison uses eight steps")
                 }
             }
+            let turbo = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionDetail,proposal:proposal,directory:root.path)) as! [String:Any]
+            var base = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionBaseDetail,proposal:proposal,directory:root.path)) as! [String:Any]
+            let turboStages = turbo["stages"] as! [[String:Any]]
+            var baseStages = base["stages"] as! [[String:Any]]
+            let modelIndex = baseStages.firstIndex { $0["id"] as? String == "minimax-h3-model-config" }!
+            let generateIndex = baseStages.firstIndex { $0["id"] as? String == "generate-video" }!
+            var baseModel = baseStages[modelIndex]["config"] as! [String:Any]
+            let turboModel = turboStages[modelIndex]["config"] as! [String:Any]
+            let ports = baseStages[generateIndex]["iports"] as! [[String:Any]]
+            try check("原模型对照真实移除Turbo",baseModel["lora"] == nil && baseModel["lora_scale"] == nil && turboModel["lora"] != nil,"model configuration changes, not just title or prompt")
+            try check("原模型保留首帧且不伪造终帧",ports[5]["src"] as? String == "vae-encode-A" && ports[6]["src"] as? String == "","first keyframe conditioning retained")
+            baseModel["lora"] = turboModel["lora"];baseModel["lora_scale"] = turboModel["lora_scale"]
+            baseStages[modelIndex]["config"] = baseModel
+            var baseGeneration = baseStages[generateIndex]["config"] as! [String:Any]
+            baseGeneration["steps"] = proposal.profile.steps;baseStages[generateIndex]["config"] = baseGeneration
+            base["stages"] = baseStages
+            try check("对照只改变Turbo和步数",try JSONSerialization.data(withJSONObject:base,options:.sortedKeys) == JSONSerialization.data(withJSONObject:turbo,options:.sortedKeys),"all other stages, input ports, prompt, seed and geometry identical")
+            var comparisonParent = ShotJob.fixture(shot:26,title:"comparison evidence")
+            var comparison = H3FidelityRecord(id:UUID(),kind:.motionDetail,directory:root.path,requestSHA256:ExecutionFocusSelfTests.hashA,originalSHA256:ExecutionFocusSelfTests.hashB)
+            comparison.status = "completed";comparison.finding = .motionIdentityDrift
+            comparison.reportSHA256 = ExecutionFocusSelfTests.hashA;comparison.observationSHA256 = ExecutionFocusSelfTests.hashB
+            comparisonParent.h3FidelityChecks = [comparison]
+            try check("新对照绑定已有运动漂移证据",H3Fidelity.baseMotionBaseline(in:comparisonParent,originalSHA256:ExecutionFocusSelfTests.hashB)?.diagnosticID == comparison.id,"same source and immutable report/observation fingerprints")
+            try check("不同原图不复用旧结论",H3Fidelity.baseMotionBaseline(in:comparisonParent,originalSHA256:ExecutionFocusSelfTests.hashA) == nil,"input identity required")
+            for invalid in 0..<5 {
+                var bad = comparison
+                if invalid == 0 { bad.status = "cancelled" }
+                if invalid == 1 { bad.kind = .codecDetail }
+                if invalid == 2 { bad.finding = .needsMoreReview }
+                if invalid == 3 { bad.observationSHA256 = nil }
+                if invalid == 4 { bad.recipeVersion = 1 }
+                comparisonParent.h3FidelityChecks = [bad]
+                try check("拒绝不完整比较依据\(invalid)",H3Fidelity.baseMotionBaseline(in:comparisonParent,originalSHA256:ExecutionFocusSelfTests.hashB) == nil,"completed motion drift with current recipe and both receipts required")
+            }
+            try check("原模型运动结果仍需运动图审",H3FidelityFinding.choices(for:.motionBaseDetail).contains(.motionIdentityDrift) && !H3FidelityFinding.choices(for:.motionBaseDetail).contains(.codecDistortion),"no codec-only conclusion applied to generated motion")
             let lock = root.appendingPathComponent("single.lock"),bytes = Data("owned fixture lease".utf8)
             try H3Fidelity.claim(lock,data:bytes)
             try check("单GPU锁拒绝第二次领取",rejected { try H3Fidelity.claim(lock,data:Data("second".utf8)) } && (try Data(contentsOf:lock)) == bytes,"O_EXCL preserves pre-existing lease")

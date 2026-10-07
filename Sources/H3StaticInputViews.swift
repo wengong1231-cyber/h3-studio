@@ -69,7 +69,7 @@ struct H3StaticInputLibrarySheet: View {
                     if primary != nil {
                         Text("本次动作与约束").font(.system(size:11,weight:.semibold))
                         TextEditor(text:$prompt).font(.system(size:12)).frame(height:110).padding(6).overlay(RoundedRectangle(cornerRadius:8).stroke(Color.primary.opacity(0.12)))
-                        Text("动作参考不强制作为视频末帧。原图、旧检查与历史保留；本次原图和归一图需分别检查。").font(.system(size:10)).foregroundStyle(.secondary)
+                        Text("参考图用于动作设计与输入检查；当前首帧生成不会将这些参考图作为持续身份约束，也不会当成末帧。原图、旧检查与历史保留。").font(.system(size:10)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -117,7 +117,7 @@ struct H3StaticBindingSummary: View {
             Label("完整静态图 · " + binding.primary.stageLabel,systemImage:"photo.badge.checkmark").font(.system(size:11,weight:.medium))
             Text("原图 SHA " + String(binding.primary.sha256.prefix(16))).font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary)
             Text(binding.primary.classification).font(.system(size:9)).foregroundStyle(.secondary)
-            if !binding.motionReferences.isEmpty { Text("\(binding.motionReferences.count) 张身份/动作参考 · 不作为连续末帧锚点").font(.system(size:10)).foregroundStyle(Color.studioGold) }
+            if !binding.motionReferences.isEmpty { Text("\(binding.motionReferences.count) 张动作/身份参考用于输入检查；当前首帧模式未将它们送入模型作为持续身份约束或末帧。").font(.system(size:10)).foregroundStyle(Color.studioGold) }
             if !binding.hasRequiredPhaseAllocation { Text("S05 阶段窗口待同步，未启动生成。").font(.system(size:10)).foregroundStyle(Color.studioGold) }
         }.padding(12).frame(maxWidth:.infinity,alignment:.leading).background(Color.studioGold.opacity(0.055)).clipShape(RoundedRectangle(cornerRadius:9))
     }

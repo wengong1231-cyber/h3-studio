@@ -3,18 +3,27 @@ import ImageIO
 import Darwin
 
 enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
-    case codecBaseline, codecDetail, motionDetail
+    case codecBaseline, codecDetail, motionDetail, motionBaseDetail
     var id: String { rawValue }
     var width: Int { self == .codecBaseline ? 768 : 1536 }
     var height: Int { self == .codecBaseline ? 448 : 896 }
     var frames: Int { 22 }
+    var isMotion: Bool { self == .motionDetail || self == .motionBaseDetail }
+    func steps(_ proposal: H3FirstProposal) -> Int { self == .motionBaseDetail ? 8 : (isMotion ? proposal.profile.steps : 0) }
     var title: String {
         switch self {
         case .codecBaseline: return "768 编解码对照"
         case .codecDetail: return "1536 编解码对照"
         case .motionDetail: return "1536 短段保真对照"
+        case .motionBaseDetail: return "1536 原模型8步对照"
         }
     }
+}
+
+struct H3FidelityBaseline: Codable, Equatable {
+    var diagnosticID: UUID
+    var reportSHA256: String
+    var observationSHA256: String
 }
 
 struct H3FidelityRecord: Codable, Equatable, Identifiable {
@@ -36,10 +45,11 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var finding: H3FidelityFinding?
     var guidance: H3FidelityGuidance?
     var progress: StageProgress?
+    var baseline: H3FidelityBaseline?
     var isActive: Bool { ["starting","running","cancelling"].contains(status) }
     var inputPath: String { directory + "/input.png" }
     var reportPath: String { directory + "/report.json" }
-    var clipPath: String? { kind == .motionDetail && status == "completed" ? directory + "/trial.mp4" : nil }
+    var clipPath: String? { kind.isMotion && status == "completed" ? directory + "/trial.mp4" : nil }
     func framePath(_ index: Int) -> String { directory + String(format:"/frames/frame-%04d.png",index) }
 }
 
@@ -54,6 +64,7 @@ struct H3FidelityRequest: Codable {
     var kind: H3FidelityKind
     var binding: H3Binding
     var appExecutableSHA256: String
+    var baseline: H3FidelityBaseline?
     var directory: String { workspace + "/h3-fidelity/" + appJobID.uuidString + "/" + id.uuidString }
     var url: URL { URL(fileURLWithPath:directory + "/request.json") }
     func ownerPresent() -> Bool {
@@ -70,6 +81,7 @@ struct H3FidelityRequest: Codable {
         guard let parent = saved.jobs.first(where:{ $0.id == appJobID }),
               let record = parent.h3FidelityChecks?.first(where:{ $0.id == id }),record.isActive,
               record.directory == directory,record.kind == kind,record.recipeVersion == recipeVersion,
+              record.baseline == baseline,
               record.requestSHA256 == H3ABConfigurationReader.digest(bytes),
               parent.status != .cancelled,parent.supersededBy == nil,
               let proposal = binding.appFirstTask?.proposal,proposal.input?.originalSHA256 == record.originalSHA256,
@@ -80,6 +92,15 @@ struct H3FidelityRequest: Codable {
         guard verified.jobSHA256 == binding.jobSHA256,verified.appTaskID == appJobID else {
             throw StudioError.invalid("原任务身份变化，未开始保真对照。")
         }
+        if kind == .motionBaseDetail {
+            guard let baseline,baseline == H3Fidelity.baseMotionBaseline(in:parent,originalSHA256:record.originalSHA256),
+                  let prior = parent.h3FidelityChecks?.first(where:{ $0.id == baseline.diagnosticID }),
+                  try WorkspaceDigest.sha256(H3Files.inside(prior.directory + "/visual-observation.json",prior.directory)) == baseline.observationSHA256 else {
+                throw StudioError.invalid("原模型对照缺少已核对的同输入运动漂移证据。")
+            }
+            _ = try H3Fidelity.validateReport(prior,appJobID:appJobID)
+            _ = try H3Fidelity.comparisonInputHash(baseline,proposal:proposal,directory:prior.directory)
+        } else if baseline != nil { throw StudioError.invalid("此对照类型不能冒用原模型比较记录。") }
         return proposal
     }
 }
@@ -91,35 +112,63 @@ enum H3Fidelity {
     // This is a STATIC clip round trip, never a generated-motion result.
     static let recipeVersion = 2
     static let codecInputFrames = 34
+    static func baseMotionBaseline(in job: ShotJob,originalSHA256: String) -> H3FidelityBaseline? {
+        guard let prior = job.h3FidelityChecks?.last(where:{
+            $0.kind == .motionDetail && $0.status == "completed" && $0.finding == .motionIdentityDrift &&
+            $0.recipeVersion == recipeVersion && $0.originalSHA256 == originalSHA256
+        }),let report = prior.reportSHA256,let observation = prior.observationSHA256,
+              ModelStatusReader.isHash(report,length:64),ModelStatusReader.isHash(observation,length:64) else { return nil }
+        return .init(diagnosticID:prior.id,reportSHA256:report,observationSHA256:observation)
+    }
+    static func comparisonInputHash(_ baseline: H3FidelityBaseline,proposal: H3FirstProposal,directory: String) throws -> String {
+        let bytes = try H3Files.read(H3Files.inside(directory + "/report.json",directory))
+        let graph = try H3Files.read(H3Files.inside(directory + "/pipeline.vpipeline",directory))
+        guard H3ABConfigurationReader.digest(bytes) == baseline.reportSHA256,
+              let report = try JSONSerialization.jsonObject(with:bytes) as? [String:Any],
+              report["diagnosticID"] as? String == baseline.diagnosticID.uuidString,
+              report["seed"] as? Int == proposal.seed,report["promptSHA256"] as? String == proposal.promptSHA256,
+              report["steps"] as? Int == proposal.profile.steps,
+              graph == (try pipeline(kind:.motionDetail,proposal:proposal,directory:directory)),
+              report["pipelineSHA256"] as? String == H3ABConfigurationReader.digest(graph),
+              let input = report["inputSHA256"] as? String,
+              input == (try WorkspaceDigest.sha256(H3Files.inside(directory + "/input.png",directory))) else {
+            throw StudioError.invalid("旧运动对照的输入、种子、提示词或管线不同，不能作为本次比较基线。")
+        }
+        return input
+    }
     static func pipeline(kind: H3FidelityKind,proposal: H3FirstProposal,directory: String) throws -> Data {
         let template = try H3Files.readTemplateFallback()
         guard H3ABConfigurationReader.digest(template) == H3ABTaskBinding.templateSHA256 else { throw StudioError.invalid("保真管线模板指纹不同。") }
         var p = proposal
         p.profile.width = kind.width;p.profile.height = kind.height;p.profile.frames = kind.frames
+        if kind.isMotion { p.profile.steps = kind.steps(proposal) }
         var graph = try JSONSerialization.jsonObject(with:H3FirstTaskBinding.pipeline(template:template,id:URL(fileURLWithPath:directory).lastPathComponent,
             proposal:p,first:directory + "/input.png",directory:directory)) as! [String:Any]
         let codecStages = Set(["model-select","load-A","vae-encode-A","vae-decode","save-detail-frames"])
         var result: [[String:Any]] = []
         for var stage in graph["stages"] as! [[String:Any]] {
             let id = stage["id"] as! String
-            if kind != .motionDetail && !codecStages.contains(id) { continue }
+            if !kind.isMotion && !codecStages.contains(id) { continue }
             // The input has already been prepared at the requested size by the
             // App from the ORIGINAL. Never upscale a generated frame or run an
             // implicit crop/resample stage a second time.
             if id == "normalize-A" || id == "save-detail-source" { continue }
             var config = stage["config"] as! [String:Any]
-            if id == "load-A" && kind != .motionDetail {
+            if id == "load-A" && !kind.isMotion {
                 config["url"] = Array(repeating:directory + "/input.png",count:codecInputFrames)
             }
             if id == "vae-encode-A" {
-                if kind != .motionDetail {
+                if !kind.isMotion {
                     result.append(["id":"stack-static-clip","type":"temporal-stack",
                         "iports":[["src":"load-A","oport":0]],
                         "config":["mode":"video","group_size":codecInputFrames,"overlap":0,"max_mb":192,"fps":24]])
                 }
-                stage["iports"] = [["src":kind == .motionDetail ? "load-A" : "stack-static-clip","oport":0],["src":"model-select","oport":0]]
+                stage["iports"] = [["src":kind.isMotion ? "load-A" : "stack-static-clip","oport":0],["src":"model-select","oport":0]]
             }
-            if id == "vae-decode" && kind != .motionDetail { stage["iports"] = [["src":"vae-encode-A","oport":0],["src":"model-select","oport":0]] }
+            if id == "vae-decode" && !kind.isMotion { stage["iports"] = [["src":"vae-encode-A","oport":0],["src":"model-select","oport":0]] }
+            if id == "minimax-h3-model-config" && kind == .motionBaseDetail {
+                config.removeValue(forKey:"lora");config.removeValue(forKey:"lora_scale")
+            }
             if id == "save-detail-frames" { config["path"] = directory + "/frames/frame-%04d.png" }
             if id == "save-video" { config["output_url"] = directory + "/trial.mp4" }
             stage["config"] = config;result.append(stage)
@@ -161,8 +210,30 @@ enum H3Fidelity {
         guard try JSONSerialization.data(withJSONObject:declared,options:.sortedKeys) == JSONSerialization.data(withJSONObject:actual,options:.sortedKeys) else {
             throw StudioError.invalid("对照图像已变化，不能将当前像素记到旧报告。")
         }
-        if record.kind == .motionDetail {
+        if record.kind.isMotion {
             guard report["clipSHA256"] as? String == (try WorkspaceDigest.sha256(H3Files.inside(record.directory + "/trial.mp4",record.directory))) else { throw StudioError.invalid("对照视频已变化。") }
+        }
+        if record.kind == .motionBaseDetail {
+            let requestBytes = try H3Files.read(H3Files.inside(record.directory + "/request.json",record.directory))
+            let request = try JSONDecoder().decode(H3FidelityRequest.self,from:requestBytes)
+            guard H3ABConfigurationReader.digest(requestBytes) == record.requestSHA256,
+                  request.id == record.id,request.appJobID == appJobID,request.kind == record.kind,
+                  request.baseline != nil,request.baseline == record.baseline,
+                  let proposal = request.binding.appFirstTask?.proposal else { throw StudioError.invalid("原模型对照请求或比较基线发生变化。") }
+            let actual = try H3Files.read(H3Files.inside(record.directory + "/pipeline.vpipeline",record.directory))
+            let expected = try pipeline(kind:record.kind,proposal:proposal,directory:record.directory)
+            guard actual == expected,report["pipelineSHA256"] as? String == H3ABConfigurationReader.digest(actual),
+                  report["steps"] as? Int == 8,report["turboAdapterUsed"] as? Bool == false,
+                  report["seed"] as? Int == proposal.seed,report["promptSHA256"] as? String == proposal.promptSHA256,
+                  report["baselineDiagnosticID"] as? String == record.baseline!.diagnosticID.uuidString,
+                  report["baselineReportSHA256"] as? String == record.baseline!.reportSHA256,
+                  report["baselineObservationSHA256"] as? String == record.baseline!.observationSHA256 else {
+                throw StudioError.invalid("原模型对照必须保持同图、同种子与提示词，使用8步且不加载Turbo。")
+            }
+            let priorDirectory = URL(fileURLWithPath:record.directory).deletingLastPathComponent().appendingPathComponent(record.baseline!.diagnosticID.uuidString).path
+            guard report["inputSHA256"] as? String == (try comparisonInputHash(record.baseline!,proposal:proposal,directory:priorDirectory)) else {
+                throw StudioError.invalid("两个运动对照没有使用完全相同的输入像素。")
+            }
         }
         return bytes
     }
@@ -224,6 +295,12 @@ enum H3FidelityWorker {
                 try H3SourceFrames.save(normalized.image,to:directory.appendingPathComponent("input.png"))
             }
             let inputHash = try WorkspaceDigest.sha256(directory.appendingPathComponent("input.png"))
+            if kind == .motionBaseDetail,let baseline = r.baseline {
+                let priorDirectory = directory.deletingLastPathComponent().appendingPathComponent(baseline.diagnosticID.uuidString).path
+                guard inputHash == (try H3Fidelity.comparisonInputHash(baseline,proposal:proposal,directory:priorDirectory)) else {
+                    throw StudioError.invalid("本次归一输入与旧运动对照不同，未启动GPU。")
+                }
+            }
             let graph = try H3Fidelity.pipeline(kind:kind,proposal:proposal,directory:r.directory)
             let pipeline = directory.appendingPathComponent("pipeline.vpipeline")
             try graph.write(to:pipeline,options:.withoutOverwriting)
@@ -258,13 +335,19 @@ enum H3FidelityWorker {
                   try WorkspaceDigest.sha256(H3Files.safe(input.originalPath)) == input.originalSHA256 else { throw StudioError.invalid("保真输入或管线在运行时变化。") }
             var report: [String:Any] = ["schema":"jingsheng-App-fidelity-report-v1","diagnosticID":r.id.uuidString,"appJobID":r.appJobID.uuidString,
                 "kind":kind.rawValue,"status":"technical_complete_visual_review_required","originalSHA256":input.originalSHA256,"inputSHA256":inputHash,
-                "recipeVersion":r.recipeVersion,"codecStaticInputFrames":kind == .motionDetail ? 0 : H3Fidelity.codecInputFrames,
+                "recipeVersion":r.recipeVersion,"codecStaticInputFrames":kind.isMotion ? 0 : H3Fidelity.codecInputFrames,
                 "sourceJobSHA256":r.binding.jobSHA256,"requestSHA256":H3ABConfigurationReader.digest(data),"pipelineSHA256":H3ABConfigurationReader.digest(graph),
                 "appExecutableSHA256":r.appExecutableSHA256,"helperSHA256":proposal.helperSHA256,"librarySHA256":proposal.librarySHA256,
                 "dimensions":[kind.width,kind.height],"frames":frames,"nativeExitCode":0,"promptSHA256":proposal.promptSHA256,"seed":proposal.seed,
-                "steps":kind == .motionDetail ? proposal.profile.steps : 0,"motionGenerated":kind == .motionDetail,"videoAccepted":false,"continuationAuthorized":false,
+                "steps":kind.steps(proposal),"motionGenerated":kind.isMotion,"videoAccepted":false,"continuationAuthorized":false,
                 "inputFromOriginal":true,"upscaledGeneratedVideo":false,"command":arguments,"completedAt":ISO8601DateFormatter().string(from:Date())]
-            if kind == .motionDetail {
+            if kind == .motionBaseDetail,let baseline = r.baseline {
+                report["turboAdapterUsed"] = false
+                report["baselineDiagnosticID"] = baseline.diagnosticID.uuidString
+                report["baselineReportSHA256"] = baseline.reportSHA256
+                report["baselineObservationSHA256"] = baseline.observationSHA256
+            }
+            if kind.isMotion {
                 let clip = directory.appendingPathComponent("trial.mp4"),audit = try HistoricalClipAudit.capture(clip)
                 guard audit.width == kind.width,audit.height == kind.height,audit.frames == kind.frames else { throw StudioError.invalid("短段对照实际帧数或尺寸不匹配。") }
                 report["clipSHA256"] = try WorkspaceDigest.sha256(clip)
