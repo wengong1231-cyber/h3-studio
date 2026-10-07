@@ -27,9 +27,7 @@ struct H3ActionRevision: Codable, Equatable {
     static func directory(workspace: String,id: UUID,number: Int) -> String {
         workspace + "/h3-config/" + id.uuidString + "/action-revisions/r\(number)"
     }
-    static var knownRequest: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Codex/2026-10-06/task-6/s35-p01-airborne-revision-handoff.json")
-    }
+
 
     func validate(source: H3QueueExecutionSource,runtime: H3Runtime,requireUserProvenance: Bool = true) throws {
         guard (2...100).contains(number),(12...4000).contains(actionGoal.utf8.count),

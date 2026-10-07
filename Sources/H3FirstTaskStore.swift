@@ -40,10 +40,12 @@ extension TaskStore {
         guard singleGeneratorIdle,let job = state.jobs.first(where:{ $0.id == id }) else { return false }
         return dependencyBlocker(job,operation:.firstPreparation) == nil && QueueScheduling.firstReadiness(job).ready
     }
-    func startAuthorizedFirst(_ id: UUID) async {
+    func startAuthorizedFirst(_ id: UUID,resumeLaunches: Bool = true) async {
         guard canStartFirstWorkflow(id),let index = state.jobs.firstIndex(where:{ $0.id == id }),
               let proposal = state.jobs[index].h3FirstProposal else { return }
-        state.automaticLaunchesPaused = false // Explicit start restores this authorized workflow; passive polling never does.
+        // Only an explicit start resumes launches. Input repair may prepare a
+        // new revision while preserving the user's existing queue pause.
+        if resumeLaunches { state.automaticLaunchesPaused = false }
         abWorkflowID = id;defer { abWorkflowID = nil }
         let control = H3PreparationControl();abPreparationControl = control;abPreparationID = id
         defer {

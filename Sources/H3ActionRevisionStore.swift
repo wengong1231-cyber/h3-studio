@@ -4,13 +4,14 @@ extension TaskStore {
     func canReviseAction(_ id: UUID) -> Bool {
         guard singleGeneratorIdle,let job = state.jobs.first(where:{ $0.id == id }),job.status == .failed,
               job.engine == .h3,job.externalHistory == nil,job.attempts.isEmpty,job.h3Binding == nil,
-              job.h3QueuePlan != nil,job.h3FirstProposal?.input != nil,job.h3FirstProposal?.queueExecution != nil,
+              job.supersededBy == nil,job.h3QueuePlan != nil,job.h3FirstProposal?.input != nil,job.h3FirstProposal?.queueExecution != nil,
+              job.h3FirstProposal?.isStaticInput == false,job.h3FirstProposal?.pixelReview?.status == "fail",
               job.h3FirstProposal?.launchAuthorized == true else { return false }
         return true
     }
     /// Stages immutable files before switching the same persisted task. Neither
     /// a failed import nor cancellation modifies the previous failed record.
-    func reviseAction(_ id: UUID,requestURL: URL = H3ActionRevision.knownRequest) async {
+    func reviseAction(_ id: UUID,requestURL: URL) async {
         guard canReviseAction(id),let index = state.jobs.firstIndex(where:{ $0.id == id }) else { return }
         let original = state.jobs[index],workspace = root,runtime = h3Runtime,reviewURL = firstReviewURL(id)
         let control = H3PreparationControl();actionRevisionID = id;actionRevisionControl = control
@@ -40,7 +41,7 @@ extension TaskStore {
             persist()
             guard storageFault == nil else { state.jobs[current] = original;throw StudioError.invalid(storageFault!) }
             abConfigurationBusy = false;actionRevisionID = nil;actionRevisionControl = nil
-            await startAuthorizedFirst(id)
+            await startAuthorizedFirst(id,resumeLaunches:false)
         } catch {
             abConfigurationBusy = false;actionRevisionID = nil;actionRevisionControl = nil
             notice = error is H3PreprocessingCancelled ? "已取消动作修订，原失败记录保留。" : error.localizedDescription

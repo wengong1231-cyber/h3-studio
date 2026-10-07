@@ -409,9 +409,16 @@ struct StudioView: View {
                 Task { await store.rebindAcceptanceSource(job.id) }
             }
             caption = "接受来源已补录；核对同一端帧，保留原接受与图审后继续，无需再次接受。"
-        } else if job.status == .failed,job.shot == 35,job.h3QueuePlan?.part == 1,job.h3FirstProposal?.queueExecution != nil,job.attempts.isEmpty,job.h3Binding == nil {
+        } else if store.hasIndependentInputRecovery(job) {
+            primary = InspectorAction(id:"recover-independent-input",title:"恢复独立输入检查",icon:"arrow.clockwise",enabled:store.canRecoverIndependentInput(job.id)) {
+                Task { do { try await store.recoverIndependentInput(job.id) } catch { store.notice = error.localizedDescription } }
+            }
+            caption = "核对本段独立来源，保留旧阻塞和图审记录后恢复检查；不接受前段、不解除暂停、不自动启动。"
+        } else if job.status == .failed,job.h3FirstProposal?.isStaticInput == false,job.h3FirstProposal?.queueExecution != nil,job.attempts.isEmpty,job.h3Binding == nil {
             primary = InspectorAction(id:"revise-action",title:store.actionRevisionID == job.id ? "正在核对动作修订" : "修正动作并重新准备",icon:"pencil.and.outline",enabled:store.canReviseAction(job.id)) {
-                Task { await store.reviseAction(job.id) }
+                let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
+                panel.message = "选择绑定本任务旧失败图审和准确Prompt的动作修订记录。App会保留原提案、失败与输入身份。"
+                panel.begin { response in if response == .OK,let url = panel.url { Task { await store.reviseAction(job.id,requestURL:url) } } }
             }
             caption = "按助手已核动作修订，保留旧失败与提示词；新画面检查后自动接续一次。"
         } else if job.h3FirstProposal != nil,job.status.isPending {
@@ -459,6 +466,11 @@ struct StudioView: View {
                 Task { await store.createS41RetryTask(job.id) }
             }
             caption = "原任务的候选、参考图与日志继续保留。"
+        }
+        if let recovery = job.h3InputRecoveries?.last {
+            secondary.append(InspectorAction(id:"input-recovery-record",title:"查看输入恢复记录",icon:"doc.text.magnifyingglass") {
+                NSWorkspace.shared.open(URL(fileURLWithPath:recovery.directory,isDirectory:true))
+            })
         }
         if let candidate = job.candidate {
             secondary.append(InspectorAction(id: "candidate", title: "查看候选目录", icon: "folder") {

@@ -166,6 +166,7 @@ import Foundation
             restored.cancel(context.2,source:"CPU cancel after restart");try H3FirstSelfTests.review(restored,id:context.2);await restored.checkFirstPixelReviews()
             try check("取消后迟到新QA不启动",restored.launchCount == 0 && restored.state.jobs.first(where:{ $0.id == context.2 })!.status == .cancelled,"completed preparation and revision history retained")
             restored.shutdown()
+            checks += try await H3IndependentInputRecoverySelfTests.run(root:root.appendingPathComponent("independent-input-recovery"),executable:executable)
             checks += try await H3RejectionScopeSelfTests.run(root:root.appendingPathComponent("review-scope"),executable:executable)
         } catch { checks.append(.init(name:"异常",passed:false,detail:error.localizedDescription));print("FAIL " + error.localizedDescription) }
         if let data = try? JSONEncoder().encode(checks) { try? data.write(to:root.appendingPathComponent("test-report.json"),options:.atomic) }
