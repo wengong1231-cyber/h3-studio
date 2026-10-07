@@ -124,7 +124,10 @@ enum H3ReferenceEngine {
 
     static func canUse(_ binding: H3ReferenceEngineBinding?,job: ShotJob) -> Bool {
         guard let binding,(try? binding.manifest.validateScope(job.id)) != nil,job.shot == 26 else { return false }
-        return (job.h3FidelityChecks ?? []).filter { $0.referenceEngine != nil }.count < binding.manifest.maximumTrials
+        if let policy = job.h3ReferenceTrialPolicy {
+            return job.h3ReferenceEngine == binding && (try? policy.instruction.validate(jobID:job.id,engine:binding)) != nil
+        }
+        return trialsUsed(in:job) < binding.manifest.maximumTrials
     }
 
     static func prepareSession(workDirectory: String,diagnosticDirectory: String) throws -> (directory: URL,config: URL,registrySHA256: String) {

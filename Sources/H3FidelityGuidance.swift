@@ -44,10 +44,10 @@ struct H3FidelityGuidance: Codable, Equatable {
             return .init(title:"未通过：编解码后人脸已改变",codeHandling:"这是编解码对照的差异，提示词不会参与这一步。开发需先检查像素归一、潜在帧布局和引擎实现。",nextStep:"保留本次输出并诊断编解码；不能靠修改动作提示词重试。",requiredInputs:"当前无需补图；已有原图、实际输入、输出帧和引擎日志足以开始定位。")
         case .motionIdentityDrift:
             if kind == .motionIsolatedBaseline {
-                return .init(title:"未通过：新版单首帧仍改变人脸",codeHandling:"本次只切换已登记引擎，沿用旧8步单首帧管线。若原图身份仍改变，新引擎或参考模式接线成功都不能算修复完成。",nextStep:"两次隔离授权已用完，保留原图、两种引擎与参考模式的像素证据；停止重复试验。先整理可验证的受控方案及准确组件缺口，新的生成或模型变更需另行授权。",requiredInputs:"当前无需重复提供已有READY。先利用现有素材准备下一方案；确实无法取得的同脸关键姿态或组件再明确列出。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
+                return .init(title:"未通过：新版单首帧仍改变人脸",codeHandling:"本次只切换已登记引擎，沿用旧8步单首帧管线。若原图身份仍改变，新引擎或参考模式接线成功都不能算修复完成。",nextStep:"保留原图、两种引擎与参考模式的像素证据；停止同配置重试。先准备能验证差异的关键姿态，再按当前次数设置推进。新模型或引擎仍需明确授权。",requiredInputs:"当前无需重复提供已有READY。先利用现有素材准备下一方案；确实无法取得的同脸关键姿态或组件再明确列出。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
             }
             if kind == .motionReferenceDetail {
-                return .init(title:"未通过：参考图模式仍改变人脸",codeHandling:"本次使用隔离新版引擎，完整原图已通过视觉编码和参考块进入模型。FL2VA的零样本参考能力仍不能保证身份，不能凭接线成功当作修复。",nextStep:"保留输出和实际参考日志；停止同方案重试。先比较新旧引擎及关键帧条件，确认差异来源；只有有意义且在剩余授权次数内，才做另一条22帧对照。",requiredInputs:"当前无需重复补图；现有完整READY及六条历史对照保留。若确需新模型或其他组件，列出具体缺口并取得授权。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
+                return .init(title:"未通过：参考图模式仍改变人脸",codeHandling:"本次使用隔离新版引擎，完整原图已通过视觉编码和参考块进入模型。FL2VA的零样本参考能力仍不能保证身份，不能凭接线成功当作修复。",nextStep:"保留输出和实际参考日志；停止同方案重试。先比较新旧引擎及关键帧条件，确认差异来源，再按当前次数设置推进有意义的短段对照。",requiredInputs:"当前无需重复补图；现有完整READY及六条历史对照保留。若确需新模型或其他组件，列出具体缺口并取得授权。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
             }
             if kind == .motionKeyframeDetail {
                 return .init(title:"未通过：首尾同图仍改变人脸",codeHandling:"已将同一完整原图真正接入首尾两帧，但中间生成仍改变身份。首尾约束不能当作持续身份锁，也不能凭提示词或超分宣称修好。",nextStep:"保留全部对照，停止同配置重试。先验证本机引擎的持续参考能力与所需组件，能力未具备时明确列出缺口，再决定新的受控方案。",requiredInputs:"当前无需重复补图；已有READY、静态及首尾约束对照足够定位。需要新接触姿态时先由应用工作流准备，并单独检查同脸同构图。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
@@ -105,5 +105,16 @@ struct H3FidelityGuidanceCard: View {
             .overlay(RoundedRectangle(cornerRadius:10).stroke(value.blocksQuality ? Color.red.opacity(0.5) : Color.orange.opacity(0.4)))
             .clipShape(RoundedRectangle(cornerRadius:10))
             .accessibilityIdentifier("fidelity.guidance")
+    }
+}
+
+// Display current policy without rewriting an immutable historical observation.
+extension H3FidelityRecord {
+    func guidanceForDisplay(in job: ShotJob) -> H3FidelityGuidance? {
+        guard var value = guidance else { return nil }
+        if kind.usesIsolatedEngine && H3ReferenceEngine.hasUnlimitedTrials(job) {
+            value.nextStep = "次数限制已按用户指令取消。保留本次结论与历史输出；先准备同脸、同构图的关键姿态，按实际条件变化推进短段对照。同配置失败不重复，新模型或引擎仍需明确授权。"
+        }
+        return value
     }
 }

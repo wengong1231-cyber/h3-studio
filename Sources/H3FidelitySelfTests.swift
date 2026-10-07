@@ -55,7 +55,7 @@ import ImageIO
             try engineManifest.validateScope(authorizedID)
             try check("引擎授权不能跨任务",rejected { try engineManifest.validateScope(UUID()) },"exact parent task required")
             engineManifest.maximumTrials = 3
-            try check("不能扩大授权试验次数",rejected { try engineManifest.validateScope(authorizedID) },"hard bound of two")
+            try check("不能改写历史登记的次数",rejected { try engineManifest.validateScope(authorizedID) },"later trial policy is a separate audited record")
             engineManifest.maximumTrials = 2;engineManifest.helperSHA256 = ExecutionFocusSelfTests.hashA
             try check("任意引擎不能冒用固定版本",rejected { try engineManifest.validateScope(authorizedID) },"pinned official native executable")
             engineManifest.helperSHA256 = H3ReferenceEngine.helperSHA;engineManifest.authorizationQuote = ""
@@ -65,6 +65,7 @@ import ImageIO
             try check("缺视觉权重时失败不下载",rejected { _ = try H3ReferenceEngine.modelStamps(workDirectory:root.path) },"read-only preflight, no remote resolver")
             var capped = ShotJob.fixture(shot:26,title:"isolated diagnostic cap");capped.id = authorizedID
             let registration = H3ReferenceEngineBinding(manifest:engineManifest,receiptPath:root.path + "/registration.json",receiptSHA256:ExecutionFocusSelfTests.hashA,modelStamps:[],registeredAt:Date())
+            try H3ReferenceTrialPolicySelfTests.run(root:root.appendingPathComponent("policy-fixtures"),engine:registration,check:check)
             var used = H3FidelityRecord(id:UUID(),kind:.motionReferenceDetail,directory:root.path,requestSHA256:ExecutionFocusSelfTests.hashA,originalSHA256:ExecutionFocusSelfTests.hashB,referenceEngine:registration)
             used.status = "failed";capped.h3FidelityChecks = [used,used]
             try check("失败和取消也消耗隔离试验额度",!H3ReferenceEngine.canUse(registration,job:capped),"no implicit retry after failed diagnostics")
@@ -153,7 +154,7 @@ import ImageIO
             modeReport["effectivePromptSHA256"] = H3ABConfigurationReader.digest(Data(H3ReferenceEngine.prompt(proposal).utf8))
             try check("基线不能偷偷包装Prompt",rejected { try H3Fidelity.validateIsolatedMode(.motionIsolatedBaseline,report:modeReport,log:firstLog,proposal:proposal) },"exact original prompt, not reference wrapper")
             let baselineFailure = H3FidelityGuidance.make(.motionIdentityDrift,shot:26,kind:.motionIsolatedBaseline,verifiedDetailImprovement:true)
-            try check("第二次失败不提示无限再试",baselineFailure.blocksQuality && baselineFailure.nextStep.contains("授权已用完") && baselineFailure.requiredInputs.contains("无需重复"),"no blind retry or unnecessary source request")
+            try check("失败后的方案不依赖固定两次额度",baselineFailure.blocksQuality && baselineFailure.nextStep.contains("停止同配置重试") && baselineFailure.requiredInputs.contains("无需重复"),"numerical policy is separate from evidence and quality requirements")
             var anchored = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionKeyframeDetail,proposal:proposal,directory:root.path)) as! [String:Any]
             var anchoredStages = anchored["stages"] as! [[String:Any]]
             var anchorPorts = anchoredStages[generateIndex]["iports"] as! [[String:Any]]

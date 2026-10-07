@@ -22,10 +22,15 @@ struct H3FidelitySheet: View {
             Text("首尾同图对照仅在8步仍有身份漂移并留证后开放：沿用同图、同Prompt、同种子和8步，只将同一原图也接入末帧。它是22帧约束试验，不是完整碰撞动作，也不是持续身份锁；中间帧仍须检查。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             HStack(alignment:.top) {
-                if let engine = job?.h3ReferenceEngine {
-                    Text("隔离 Vpipe " + engine.manifest.version + " 已登记 · 已用 \((job?.h3FidelityChecks ?? []).filter { $0.referenceEngine != nil }.count)/2 次授权。参考模式会把原图编码进模型；它是零样本能力，不固定首帧，也不保证同脸。每次仍需检查22帧样本。")
+                if let job,let engine = job.h3ReferenceEngine {
+                    Text("隔离 Vpipe " + engine.manifest.version + " 已登记 · " + H3ReferenceEngine.trialStatus(job) + "。参考模式会把原图编码进模型；它是零样本能力，不固定首帧，也不保证同脸。每次仍需检查22帧样本。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
-                    if let proposal = job?.h3Binding?.appFirstTask?.proposal {
+                        .accessibilityIdentifier("fidelity.trial-status")
+                    if job.h3ReferenceTrialPolicy == nil {
+                        Button("更新试验次数设置") { chooseTrialPolicy() }
+                            .disabled(!store.singleGeneratorIdle).accessibilityIdentifier("fidelity.import-trial-policy")
+                    }
+                    if let proposal = job.h3Binding?.appFirstTask?.proposal {
                         Button("复制参考对照Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(H3ReferenceEngine.prompt(proposal),forType:.string) }
                         Button("复制首帧基线Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(proposal.prompt,forType:.string) }
                     }
@@ -37,7 +42,7 @@ struct H3FidelitySheet: View {
                 }
             }
             if job?.h3ReferenceEngine != nil {
-                Text("新版单首帧基线使用剩余一次授权：与旧引擎原模型8步对照保持相同图像、种子、原Prompt及单首帧管线，仅切换已登记引擎。先完成参考模式的实际检查才开放；用来区分引擎与参考条件的影响，不是已验证修复。两种隔离方案合计最多两次，失败取消也计数。")
+                Text("新版单首帧基线与旧引擎原模型8步对照保持相同图像、种子、原Prompt及单首帧管线，仅切换已登记引擎。先完成参考模式的实际检查才开放；用来区分引擎与参考条件的影响，不是已验证修复。历史试验始终保留，新方案仍须有可验证的条件变化。")
                     .font(.system(size:11)).foregroundStyle(.secondary)
             }
             LazyVGrid(columns:Array(repeating:GridItem(.flexible(),alignment:.leading),count:3),alignment:.leading) {
@@ -76,7 +81,7 @@ struct H3FidelitySheet: View {
                                 if let clip = record.clipPath { CandidateVideoPreview(path:clip,title:(job?.shortID ?? "") + " · " + record.kind.title).frame(height:220) }
                                 if let note = record.observation {
                                     Text(note).font(.system(size:11)).textSelection(.enabled)
-                                    if let guidance = record.guidance { H3FidelityGuidanceCard(value:guidance) }
+                                    if let job,let guidance = record.guidanceForDisplay(in:job) { H3FidelityGuidanceCard(value:guidance) }
                                 }
                                 else {
                                     Picker("实际检查结果",selection:Binding<H3FidelityFinding?>(get:{ findings[record.id] },set:{ findings[record.id] = $0 })) {
@@ -97,6 +102,14 @@ struct H3FidelitySheet: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.system(size:11)) }
         }.padding(22).frame(width:920,height:720)
+    }
+    private func chooseTrialPolicy() {
+        let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK,let url = panel.url {
+                Task { do { try await store.importReferenceTrialPolicy(url,jobID:jobID);error = nil } catch { self.error = error.localizedDescription } }
+            }
+        }
     }
     private func chooseReferenceEngine() {
         let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false

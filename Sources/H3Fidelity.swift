@@ -63,6 +63,7 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var baseline: H3FidelityBaseline?
     var referenceEngine: H3ReferenceEngineBinding?
     var referenceTrial: H3FidelityBaseline?
+    var referenceTrialPolicy: H3ReferenceTrialPolicyBinding?
     var isActive: Bool { ["starting","running","cancelling"].contains(status) }
     var inputPath: String { directory + "/input.png" }
     var reportPath: String { directory + "/report.json" }
@@ -84,6 +85,7 @@ struct H3FidelityRequest: Codable {
     var baseline: H3FidelityBaseline?
     var referenceEngine: H3ReferenceEngineBinding?
     var referenceTrial: H3FidelityBaseline?
+    var referenceTrialPolicy: H3ReferenceTrialPolicyBinding?
     var directory: String { workspace + "/h3-fidelity/" + appJobID.uuidString + "/" + id.uuidString }
     var url: URL { URL(fileURLWithPath:directory + "/request.json") }
     func ownerPresent() -> Bool {
@@ -103,6 +105,7 @@ struct H3FidelityRequest: Codable {
               record.baseline == baseline,
               record.referenceEngine == referenceEngine,
               record.referenceTrial == referenceTrial,
+              record.referenceTrialPolicy == referenceTrialPolicy,
               record.requestSHA256 == H3ABConfigurationReader.digest(bytes),
               parent.status != .cancelled,parent.supersededBy == nil,
               let proposal = binding.appFirstTask?.proposal,proposal.input?.originalSHA256 == record.originalSHA256,
@@ -114,12 +117,12 @@ struct H3FidelityRequest: Codable {
             throw StudioError.invalid("原任务身份变化，未开始保真对照。")
         }
         if kind.usesIsolatedEngine {
-            guard let referenceEngine,referenceEngine == parent.h3ReferenceEngine,parent.shot == 26,
-                  (parent.h3FidelityChecks ?? []).filter({ $0.referenceEngine != nil }).count <= referenceEngine.manifest.maximumTrials else {
-                throw StudioError.invalid("参考对照未绑定App隔离引擎登记，或超过授权次数。")
+            guard let referenceEngine,referenceEngine == parent.h3ReferenceEngine,parent.shot == 26 else {
+                throw StudioError.invalid("参考对照未绑定App隔离引擎登记。")
             }
+            try H3ReferenceEngine.validateTrialAllowance(referenceEngine,job:parent,workspace:workspace,policy:referenceTrialPolicy,includingCurrent:true)
             try referenceEngine.validate(jobID:appJobID,workspace:workspace,workDirectory:proposal.workDirectory)
-        } else if referenceEngine != nil { throw StudioError.invalid("旧对照不能覆盖原任务引擎。") }
+        } else if referenceEngine != nil || referenceTrialPolicy != nil { throw StudioError.invalid("旧对照不能覆盖原任务引擎。") }
         if kind == .motionIsolatedBaseline {
             guard let referenceTrial,let referenceEngine,
                   referenceTrial == H3Fidelity.referenceTrialEvidence(in:parent,originalSHA256:record.originalSHA256),
@@ -315,6 +318,7 @@ enum H3Fidelity {
                   request.baseline != nil,request.baseline == record.baseline,
                   request.referenceEngine == record.referenceEngine,
                   request.referenceTrial == record.referenceTrial,
+                  request.referenceTrialPolicy == record.referenceTrialPolicy,
                   let proposal = request.binding.appFirstTask?.proposal else { throw StudioError.invalid("原模型对照请求或比较基线发生变化。") }
             let actual = try H3Files.read(H3Files.inside(record.directory + "/pipeline.vpipeline",record.directory))
             let expected = try pipeline(kind:record.kind,proposal:proposal,directory:record.directory)
@@ -346,6 +350,14 @@ enum H3Fidelity {
                       report["originalNativeRegistryUnchanged"] as? Bool == true,
                       report["identityLockVerified"] as? Bool == false else { throw StudioError.invalid("参考对照缺少实际引擎、参考模式或提示词回执。") }
                 try engine.manifest.validateScope(appJobID)
+                if let policy = request.referenceTrialPolicy {
+                    try policy.validate(jobID:appJobID,engine:engine,workspace:request.workspace)
+                    guard report["trialPolicyReceiptSHA256"] as? String == policy.receiptSHA256 else {
+                        throw StudioError.invalid("对照报告缺少本次用户次数设置回执。")
+                    }
+                } else if report["trialPolicyReceiptSHA256"] != nil {
+                    throw StudioError.invalid("旧对照不能冒用后来的次数设置。")
+                }
                 let nativeLog = try H3Files.read(H3Files.inside(record.directory + "/native.log",record.directory))
                 guard report["nativeLogSHA256"] as? String == H3ABConfigurationReader.digest(nativeLog) else {
                     throw StudioError.invalid("隔离引擎原生日志已改变。")
@@ -506,6 +518,10 @@ enum H3FidelityWorker {
             }
             if kind.usesIsolatedEngine,let engine = r.referenceEngine {
                 try engine.validate(jobID:r.appJobID,workspace:r.workspace,workDirectory:proposal.workDirectory)
+                if let policy = r.referenceTrialPolicy {
+                    try policy.validate(jobID:r.appJobID,engine:engine,workspace:r.workspace)
+                    report["trialPolicyReceiptSHA256"] = policy.receiptSHA256
+                }
                 guard let registryHash,try WorkspaceDigest.sha256(H3Files.safe(proposal.workDirectory + "/data.mdb")) == registryHash else {
                     throw StudioError.invalid("原生登记源发生变化，保留隔离对照，不能声称原数据库保持。")
                 }
