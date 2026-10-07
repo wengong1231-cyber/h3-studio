@@ -93,11 +93,23 @@ extension TaskStore {
               try WorkspaceDigest.sha256(H3Files.inside(record.reportPath,record.directory)) == reportHash else { throw StudioError.invalid("对照结论缺少本次有效报告或已记录，未覆盖。") }
         let receipts = try H3Fidelity.outputReceipts(directory:record.directory,kind:record.kind)
         _ = try H3Fidelity.validateReport(record,appJobID:id)
-        let guidance = H3FidelityGuidance.make(finding,shot:state.jobs[i].shot,kind:record.kind)
+        var detailEvidence: [String:String] = [:]
+        if finding == .motionIdentityDrift,let detail = state.jobs[i].h3FidelityChecks?.last(where: {
+            $0.kind == .codecDetail && $0.status == "completed" && $0.finding == .detailImproved &&
+            $0.originalSHA256 == record.originalSHA256 && $0.recipeVersion == record.recipeVersion
+        }),let detailReportSHA = detail.reportSHA256,let detailObservationSHA = detail.observationSHA256 {
+            _ = try H3Fidelity.validateReport(detail,appJobID:id)
+            guard try WorkspaceDigest.sha256(H3Files.inside(detail.reportPath,detail.directory)) == detailReportSHA,
+                  try WorkspaceDigest.sha256(H3Files.inside(detail.directory + "/visual-observation.json",detail.directory)) == detailObservationSHA else {
+                throw StudioError.invalid("先前静态保真结论的指纹已改变；未沿用其改善结论。")
+            }
+            detailEvidence = ["diagnosticID":detail.id.uuidString,"reportSHA256":detailReportSHA,"observationSHA256":detailObservationSHA]
+        }
+        let guidance = H3FidelityGuidance.make(finding,shot:state.jobs[i].shot,kind:record.kind,verifiedDetailImprovement:!detailEvidence.isEmpty)
         let guidanceObject = try JSONSerialization.jsonObject(with:JSONEncoder().encode(guidance))
         let payload: [String:Any] = ["schema":"jingsheng-App-fidelity-observation-v1","appJobID":id.uuidString,"diagnosticID":recordID.uuidString,
             "reportSHA256":reportHash,"originalSHA256":record.originalSHA256,"frames":receipts,"observation":text,
-            "finding":finding.rawValue,"guidance":guidanceObject,
+            "finding":finding.rawValue,"guidance":guidanceObject,"verifiedDetailEvidence":detailEvidence,
             "source":"AppUI","actorKind":"unknown","videoAccepted":false,"continuationAuthorized":false,"recordedAt":ISO8601DateFormatter().string(from:Date())]
         let bytes = try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys])
         try bytes.write(to:URL(fileURLWithPath:record.directory + "/visual-observation.json"),options:.withoutOverwriting)

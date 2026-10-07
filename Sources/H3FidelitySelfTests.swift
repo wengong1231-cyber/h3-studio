@@ -89,6 +89,9 @@ import ImageIO
             try check("身份漂移列出具体素材及补图Prompt",drift.blocksQuality && drift.requiredInputs.contains("各张脸") && drift.prompt?.contains("three-headed, six-armed") == true && drift.promptPurpose?.contains("重绘") == true,"reference prompt distinct from motion prompt")
             let action = H3FidelityGuidance.make(.actionMismatch,shot:26,kind:.motionDetail)
             try check("动作修订草稿明确接触与回弹",action.prompt?.contains("one clear, brief contact") == true && action.prompt?.contains("recoils slightly") == true && action.prompt != drift.prompt,"precise S26 action, no acceptance side effect")
+            let constrained = H3FidelityGuidance.make(.motionIdentityDrift,shot:26,kind:.motionDetail,verifiedDetailImprovement:true)
+            try check("静态已改善不要求用户重复补图",constrained.blocksQuality && constrained.requiredInputs.contains("无需重复补图") && constrained.prompt == action.prompt && constrained.prompt != drift.prompt,"verified codec evidence routes to engine/identity limits, not unnecessary redraw")
+            try check("精确Prompt不凭空补全画外龙身",action.prompt?.contains("without inventing unseen parts") == true && drift.prompt?.contains("do not invent unseen body parts") == true,"preserve observed framing rather than contradict the actual complete input")
             testStore.shutdown();store = nil
         } catch { checks.append(.init(name:"unexpected",passed:false,detail:error.localizedDescription)) }
         store?.shutdown()
