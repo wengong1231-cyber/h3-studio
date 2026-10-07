@@ -157,24 +157,57 @@ enum H3VideoRejectionReader {
 extension ShotJob {
     var videoContinuationAuthorized: Bool { h3VideoRejection == nil && h3VideoReview?.canAuthorizeContinuation == true }
 }
+
+enum H3VideoRejectionScope {
+    /// Follow actual request/endpoint dependencies, including frozen historical
+    /// links. A later independent static stage in the same shot is not a child.
+    static func affectedIDs(of job: ShotJob,jobs: [ShotJob]) -> Set<UUID> {
+        var ids: Set<UUID> = [job.id]
+        var requests = Set(job.h3QueuePlan.map { [$0.requestID] } ?? [])
+        var changed = true
+        while changed {
+            changed = false
+            for candidate in jobs where !ids.contains(candidate.id) && candidate.externalHistory == nil {
+                let requestMatches = candidate.h3QueuePlan?.dependencyRequestID.map { requests.contains($0) } ?? false
+                let endpoints = [candidate.h3FirstProposal?.queueExecution?.endpoint?.appJobID,
+                                 candidate.h3Binding?.appFirstTask?.proposal.queueExecution?.endpoint?.appJobID].compactMap { $0 }
+                guard requestMatches || endpoints.contains(where:ids.contains) else { continue }
+                ids.insert(candidate.id)
+                if let request = candidate.h3QueuePlan?.requestID { requests.insert(request) }
+                changed = true
+            }
+        }
+        return ids
+    }
+}
+
 extension TaskStore {
+    func rejectionScopeIsIdle(_ job: ShotJob) -> Bool {
+        let affected = H3VideoRejectionScope.affectedIDs(of:job,jobs:state.jobs)
+        let active = Set(state.jobs.filter { $0.status.isActive }.map(\.id))
+            .union([fidelityJobID,abWorkflowID,abPreparationID,actionRevisionID].compactMap { $0 })
+        return affected.isDisjoint(with:active)
+    }
     func canRejectVideo(_ id: UUID) -> Bool {
-        guard singleGeneratorIdle,let job = state.jobs.first(where:{ $0.id == id }),job.supersededBy == nil,job.externalHistory == nil,
+        guard candidateReviewResourcesAvailable,let job = state.jobs.first(where:{ $0.id == id }),job.supersededBy == nil,job.externalHistory == nil,
               [.completed,.failed,.cancelled,.interrupted].contains(job.status),job.h3QueuePlan != nil,let binding = job.h3Binding,binding.appTaskID == id else { return false }
-        return FileManager.default.fileExists(atPath:binding.clipPath)
+        return rejectionScopeIsIdle(job) && FileManager.default.fileExists(atPath:binding.clipPath)
     }
     func rejectVideo(_ id: UUID,reason: String,source: URL? = nil) async throws {
-        guard canRejectVideo(id),let job = state.jobs.first(where:{ $0.id == id }) else { throw StudioError.invalid("当前还没有可拒绝的候选，或现有任务正在运行。") }
+        guard canRejectVideo(id),let job = state.jobs.first(where:{ $0.id == id }) else { throw StudioError.invalid("候选尚未就绪，或其依赖任务正在运行、记录正在核对。") }
         abConfigurationBusy = true;defer { abConfigurationBusy = false }
         configurationReadOperation = "记录 " + job.shortID + " 候选拒绝与精确输出身份"
         let workspace = root,runtime = h3Runtime
         let rejection = try await Task.detached(priority:.utility) { try H3VideoRejectionReader.record(job:job,workspace:workspace,runtime:runtime,reason:reason,source:source) }.value
-        guard !shuttingDown,let i = state.jobs.firstIndex(where:{ $0.id == id }),state.jobs[i].h3Binding == job.h3Binding,state.jobs[i].supersededBy == nil else { throw StudioError.invalid("任务身份已变化，拒绝已暂存但没有接续。") }
+        guard !shuttingDown,let i = state.jobs.firstIndex(where:{ $0.id == id }),state.jobs[i].h3Binding == job.h3Binding,
+              [.completed,.failed,.cancelled,.interrupted].contains(state.jobs[i].status),
+              state.jobs[i].supersededBy == nil,rejectionScopeIsIdle(state.jobs[i]) else { throw StudioError.invalid("任务身份或依赖已变化，拒绝已暂存但没有接续。") }
         let before = state
+        let affected = H3VideoRejectionScope.affectedIDs(of:state.jobs[i],jobs:state.jobs)
         state.jobs[i].h3VideoRejection = rejection;state.jobs[i].stage = "候选已拒绝 · 已保留原视频与技术记录"
         state.jobs[i].logTail.append("候选拒绝：" + rejection.reason + "；操作者来源 " + rejection.actorKind + "；" + rejection.sourceReference)
-        for j in state.jobs.indices where state.jobs[j].supersededBy == nil && state.jobs[j].h3QueuePlan?.shot == job.shot &&
-            (state.jobs[j].h3QueuePlan?.part ?? 0) > job.h3QueuePlan!.part && state.jobs[j].status.isPending {
+        for j in state.jobs.indices where state.jobs[j].id != id && affected.contains(state.jobs[j].id) &&
+            state.jobs[j].supersededBy == nil && state.jobs[j].externalHistory == nil && state.jobs[j].status.isPending {
             state.jobs[j].h3AutomaticWorkflow?.automaticContinuationAuthorized = false
             state.jobs[j].stage = "前段候选已拒绝 · 旧端点与旧QA不能接续"
             state.jobs[j].progress = nil

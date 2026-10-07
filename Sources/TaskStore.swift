@@ -86,6 +86,14 @@ import Darwin
     var staticImageCount: Int { Set(staticAssets.map(\.sha256)).count }
     var generatorResourcesIdle: Bool { fidelityJobID == nil && fidelityRunner == nil && !shuttingDown && !abConfigurationBusy && !historyImportInFlight && !videoReviewRefreshInFlight && observedJob == nil && runner == nil && activeJob == nil && storageFault == nil && recoveredPIDs.isEmpty }
     var singleGeneratorIdle: Bool { fidelityJobID == nil && fidelityRunner == nil && abWorkflowID == nil && generatorResourcesIdle }
+    /// Recording a terminal candidate decision does not acquire the GPU. Keep
+    /// configuration writes serialized and require every live worker to have a
+    /// known owner; the decision also checks its own dependency scope.
+    var candidateReviewResourcesAvailable: Bool {
+        !shuttingDown && !abConfigurationBusy && !historyImportInFlight && !videoReviewRefreshInFlight &&
+        !firstReviewInFlight && storageFault == nil && recoveredPIDs.isEmpty && observedJob == nil &&
+        (runner == nil || activeJob != nil) && (fidelityRunner == nil || fidelityJobID != nil)
+    }
     func canUseS41Resources(_ id: UUID) -> Bool { generatorResourcesIdle && (abWorkflowID == nil || abWorkflowID == id) }
     var canStart: Bool { singleGeneratorIdle && !fixtureQueueCandidates.isEmpty }
     var hasAuthorizedFirstContinuations: Bool {
