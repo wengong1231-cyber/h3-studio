@@ -129,7 +129,7 @@ final class OrbFloatingPanel: NSPanel {
         app.submenu = appMenu; root.addItem(app)
         let file = NSMenuItem(); let fileMenu = NSMenu(title: "文件")
         fileMenu.addItem(withTitle: "打开生成工作台", action: #selector(showMain), keyEquivalent: "1").target = self
-        fileMenu.addItem(withTitle: "关闭工作台", action: #selector(closeWorkbench), keyEquivalent: "w").target = self
+        fileMenu.addItem(withTitle: "关闭当前窗口", action: #selector(closeCurrentWindow), keyEquivalent: "w").target = self
         file.submenu = fileMenu; root.addItem(file)
         let edit = NSMenuItem(); let editMenu = NSMenu(title: "编辑")
         editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
@@ -154,6 +154,9 @@ final class OrbFloatingPanel: NSPanel {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
     @objc func closeWorkbench() { mainWindow?.performClose(nil) }
+    @objc private func closeCurrentWindow() {
+        if !CandidatePlaybackController.shared.closeIfKey() { closeWorkbench() }
+    }
     @objc private func minimizeWorkbench() { mainWindow?.performMiniaturize(nil) }
     @objc func showOrb() { orbWindow?.orderFrontRegardless() }
     @objc private func hideOrb() { orbWindow?.orderOut(nil) }

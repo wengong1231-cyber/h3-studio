@@ -3,8 +3,8 @@ set -euo pipefail
 TASK_ROOT="${0:A:h:h}"
 APP_DIR="$TASK_ROOT/build/release/镜生 H3.app"
 BIN="$APP_DIR/Contents/MacOS/WanshenjiH3Studio"
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIR/Contents/Info.plist")" == "0.4.18" ]] || { print -u2 "Expected verified 0.4.18 candidate."; exit 1; }
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIR/Contents/Info.plist")" == "24" ]] || { print -u2 "Expected build 24."; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIR/Contents/Info.plist")" == "0.4.19" ]] || { print -u2 "Expected verified 0.4.19 candidate."; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIR/Contents/Info.plist")" == "26" ]] || { print -u2 "Expected build 26."; exit 1; }
 case "${1:---plan}" in
   --plan)
     exec "$BIN" --installation-plan --legacy-workspace "$TASK_ROOT/Data"

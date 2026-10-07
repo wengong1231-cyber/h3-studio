@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreGraphics
+import AVFoundation
 
 @MainActor enum PreviewSelfTests {
     static func load(_ service: PreviewImageService,_ key: PreviewImageKey) async -> PreviewReadResult {
@@ -18,6 +19,51 @@ import CoreGraphics
         }
         do {
             try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+            // Exercise a real, isolated CPU fixture. No production candidate is
+            // rewritten and this test never starts an H3 model.
+            let movie = root.appendingPathComponent("playback-fixture.mp4")
+            try await H3FirstSelfTests.movie(movie)
+            let movieHash = try WorkspaceDigest.sha256(movie)
+            let playback = try CandidatePlaybackSession(path:movie.path)
+            defer { playback.stop() }
+            playback.start()
+            try await StudioSelfTests.wait("candidate autoplay",timeout:10) { playback.player.currentTime().seconds > 0.15 }
+            try check("大窗打开后真实自动播放",playback.started && playback.player.currentItem?.status == .readyToPlay && playback.player.rate > 0,"CPU 视频播放时钟已前进，无需再次点播放")
+            playback.togglePlayback()
+            try await StudioSelfTests.wait("candidate controls paused",timeout:3) { !playback.playing }
+            let item = playback.player.currentItem
+            for _ in 0..<100 { playback.start() }
+            try check("重复呈现不重建播放器或打断暂停",playback.player.currentItem === item && playback.player.rate == 0,"重复启动请求不能复位时间或自动恢复用户暂停")
+            playback.seek(to:1.2)
+            try await StudioSelfTests.wait("candidate seek",timeout:5) { abs(playback.player.currentTime().seconds-1.2) < 0.1 }
+            try check("常驻进度条定位真实视频时间",abs(playback.position-1.2) < 0.1 && playback.duration > 1.9,"使用与界面相同的seek入口，暂停中拖动后不自动播放")
+            playback.seek(to:playback.duration)
+            try await StudioSelfTests.wait("candidate end seek",timeout:5) { playback.player.currentTime().seconds > 1.9 }
+            playback.togglePlayback()
+            try await StudioSelfTests.wait("candidate replay",timeout:5) { playback.playing && playback.position < 1 }
+            try check("播完可从头重播",playback.player.rate > 0 && playback.player.currentTime().seconds < 1,"播放按钮从片尾跳回开头，不停在结束帧")
+            playback.stop()
+            let stoppedAt = playback.player.currentTime().seconds
+            try await Task.sleep(nanoseconds:150_000_000)
+            playback.start()
+            try check("关闭播放窗立即停止且不能意外复活",playback.closed && playback.player.rate == 0 && abs(playback.player.currentTime().seconds-stoppedAt) < 0.1,"关闭后迟到回调和重复启动不能继续播放")
+            let reopened = try CandidatePlaybackSession(path:movie.path)
+            defer { reopened.stop() }
+            try check("重新打开从开头建立独立播放",reopened.player.currentItem !== item && reopened.player.currentTime().seconds == 0,"不继承上个已关闭窗口的进度或暂停状态")
+            let badMovie = root.appendingPathComponent("unplayable.mp4")
+            try Data("invalid media fixture".utf8).write(to:badMovie)
+            let failedPlayback = try CandidatePlaybackSession(path:badMovie.path)
+            defer { failedPlayback.stop() }
+            failedPlayback.start()
+            try await StudioSelfTests.wait("candidate playback failure",timeout:10) { failedPlayback.failure != nil }
+            try check("坏视频显示播放失败并停止",failedPlayback.failure != nil && failedPlayback.player.rate == 0,"读取失败不会显示已通过或改动任务验收")
+            var rejectedMissing = false
+            do { _ = try CandidatePlaybackSession(path:root.appendingPathComponent("missing.mp4").path) }
+            catch { rejectedMissing = true }
+            try check("缺失视频在打开前明确报错",rejectedMissing && (try WorkspaceDigest.sha256(movie)) == movieHash,"测试和播放都没有改写候选文件")
+            let compact = CandidatePlaybackController.contentSize(visibleFrame:CGRect(x:0,y:0,width:1024,height:640))
+            let roomy = CandidatePlaybackController.contentSize(visibleFrame:CGRect(x:0,y:0,width:1920,height:1080))
+            try check("大播放窗适应可见屏幕",compact.width < 1024 && compact.height < 640 && roomy.width == 1100 && roomy.height == 720,"小屏保留边距，普通屏以1100×720内容区打开并可继续缩放")
             let a = root.appendingPathComponent("A-private-name.png"),b = root.appendingPathComponent("B-private-name.png")
             try FixtureWorker.savePNG(FixtureWorker.makeFrame(frame:8,width:1024,height:512),to:a,width:1024,height:512)
             try FixtureWorker.savePNG(FixtureWorker.makeFrame(frame:35,width:1024,height:512),to:b,width:1024,height:512)

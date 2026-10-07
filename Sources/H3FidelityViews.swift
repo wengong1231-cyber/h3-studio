@@ -51,7 +51,7 @@ struct H3FidelitySheet: View {
                                     image(record.inputPath,title:"本次实际输入",revision:record.requestSHA256)
                                     image(record.framePath(sample),title:record.kind == .motionDetail ? "本次原生 raw\(sample)" : "静态编解码 raw\(sample)",revision:record.reportSHA256 ?? "")
                                 }
-                                if let clip = record.clipPath { CandidatePlayer(path:clip).frame(height:220) }
+                                if let clip = record.clipPath { CandidateVideoPreview(path:clip,title:(job?.shortID ?? "") + " · " + record.kind.title).frame(height:220) }
                                 if let note = record.observation {
                                     Text(note).font(.system(size:11)).textSelection(.enabled)
                                     if let guidance = record.guidance { H3FidelityGuidanceCard(value:guidance) }

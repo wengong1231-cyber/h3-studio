@@ -454,7 +454,7 @@ struct StudioView: View {
     private func detail(_ job: ShotJob) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             if let candidate = job.candidate, FileManager.default.fileExists(atPath: candidate) {
-                CandidatePlayer(path: candidate).frame(height: 145).clipShape(RoundedRectangle(cornerRadius: 10))
+                CandidateVideoPreview(path:candidate,title:job.title).frame(height:145)
                 Label(job.externalHistory.map { $0.userRequestedRedo == true ? "此前 CLI 生成 · 用户已拒收，要求重做" : ($0.userSelected ? "此前 CLI 生成 · 用户已选用" : (job.h3Outcome?.visualReview == "quality_unpassed" ? "技术完成 · 画面审查未过，待用户确认" : (job.h3Outcome?.technicalPass == true ? "此前 CLI 生成 · 技术通过，备选" : "此前 CLI 生成 · 待质检与用户确认"))) } ?? (job.engine == .h3 && job.h3Outcome == nil ? "已写出候选 · 技术检查待完成" : "候选输出 · 未纳入正式成片"), systemImage: job.engine == .h3 && job.h3Outcome == nil ? "clock" : "checkmark.shield")
                     .font(.system(size: 9)).foregroundStyle(job.engine == .h3 && job.h3Outcome == nil ? Color.studioGold : Color.studioTeal)
             } else if job.h3FirstProposal != nil {
@@ -802,7 +802,7 @@ struct CandidatePlayer: NSViewRepresentable {
         // aborts while instantiating VideoPlayer's generic superclass metadata
         // when built with Xcode 27. AVPlayerView avoids that overlay boundary.
         let view = AVPlayerView()
-        view.controlsStyle = .inline
+        view.controlsStyle = .none
         view.videoGravity = .resizeAspect
         view.showsFullScreenToggleButton = false
         view.setAccessibilityLabel("候选视频预览")
