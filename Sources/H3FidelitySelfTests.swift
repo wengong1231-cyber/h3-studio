@@ -38,6 +38,52 @@ import ImageIO
                 }
             }
             let turbo = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionDetail,proposal:proposal,directory:root.path)) as! [String:Any]
+            let reference = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionReferenceDetail,proposal:proposal,directory:root.path)) as! [String:Any]
+            let refStages = reference["stages"] as! [[String:Any]]
+            let refPorts = refStages.first { $0["id"] as? String == "generate-video" }!["iports"] as! [[String:Any]]
+            let refEncoder = refStages.first { $0["id"] as? String == "video-ref-encoder" }!
+            let refConfig = refStages.first { $0["id"] as? String == "minimax-h3-model-config" }!["config"] as! [String:Any]
+            try check("参考模式没有混用首尾条件",refPorts[5]["src"] as? String == "" && refPorts[6]["src"] as? String == "" && !refStages.contains { $0["id"] as? String == "vae-encode-A" },"reference and keyframe modes are mutually exclusive")
+            try check("图片参考真实连接三个模型输入",[0,7,8].allSatisfy { refPorts[$0]["src"] as? String == "video-ref-encoder" } && refPorts[7]["oport"] as? Int == 1 && refPorts[8]["oport"] as? Int == 2,"condition embedding, packed video and audio reference rows")
+            let refInputs = refEncoder["iports"] as! [[String:Any]]
+            try check("参考来自完整归一原图",refInputs[2]["src"] as? String == "load-A" && (refEncoder["config"] as? [String:Any])?["reference_image_short_edge"] as? Int == 768,"no face crop, stretch or new model dependency")
+            try check("隔离参考对照不引入其他模型",refConfig["lora"] == nil && refConfig["linear_branch"] == nil,"existing FL2VA only, no Turbo or VDN download")
+            let refPrompt = (refStages.first { $0["id"] as? String == "text-prompt" }!["config"] as! [String:Any])["text"] as! String
+            try check("参考Prompt显式绑定图片和主体",refPrompt == H3ReferenceEngine.prompt(proposal) && refPrompt.contains("<Picture 1>") && refPrompt.hasSuffix(proposal.prompt),"exact original motion prompt retained after reference-mode wrapper")
+            var engineManifest = H3ReferenceEngineManifest(appJobID:UUID(),version:"0.1.80",bundlePath:"/tmp/fixture-runtime.bundle",packagePath:"/tmp/fixture.dmg",packageSHA256:H3ReferenceEngine.packageSHA,helperSHA256:H3ReferenceEngine.helperSHA,librarySHA256:H3ReferenceEngine.librarySHA,authorizationQuote:"允许隔离接入并做小批对照",maximumTrials:2)
+            let authorizedID = engineManifest.appJobID
+            try engineManifest.validateScope(authorizedID)
+            try check("引擎授权不能跨任务",rejected { try engineManifest.validateScope(UUID()) },"exact parent task required")
+            engineManifest.maximumTrials = 3
+            try check("不能扩大授权试验次数",rejected { try engineManifest.validateScope(authorizedID) },"hard bound of two")
+            engineManifest.maximumTrials = 2;engineManifest.helperSHA256 = ExecutionFocusSelfTests.hashA
+            try check("任意引擎不能冒用固定版本",rejected { try engineManifest.validateScope(authorizedID) },"pinned official native executable")
+            engineManifest.helperSHA256 = H3ReferenceEngine.helperSHA;engineManifest.authorizationQuote = ""
+            try check("没有明确授权不能接入",rejected { try engineManifest.validateScope(authorizedID) },"not inferred from silence")
+            engineManifest.authorizationQuote = "允许隔离接入并做小批对照"
+            try check("只填登记字段不能伪造引擎文件",rejected { try H3ReferenceEngine.verifyRuntime(engineManifest) },"package, helper, library and official signature are checked")
+            try check("缺视觉权重时失败不下载",rejected { _ = try H3ReferenceEngine.modelStamps(workDirectory:root.path) },"read-only preflight, no remote resolver")
+            var capped = ShotJob.fixture(shot:26,title:"isolated diagnostic cap");capped.id = authorizedID
+            let registration = H3ReferenceEngineBinding(manifest:engineManifest,receiptPath:root.path + "/registration.json",receiptSHA256:ExecutionFocusSelfTests.hashA,modelStamps:[],registeredAt:Date())
+            var used = H3FidelityRecord(id:UUID(),kind:.motionReferenceDetail,directory:root.path,requestSHA256:ExecutionFocusSelfTests.hashA,originalSHA256:ExecutionFocusSelfTests.hashB,referenceEngine:registration)
+            used.status = "failed";capped.h3FidelityChecks = [used,used]
+            try check("失败和取消也消耗隔离试验额度",!H3ReferenceEngine.canUse(registration,job:capped),"no implicit retry after failed diagnostics")
+            capped.h3FidelityChecks = []
+            try check("没有App登记不能投递参考对照",!H3ReferenceEngine.canUse(nil,job:capped),"old task engine is never substituted automatically")
+            let legacyRecord = H3FidelityRecord(id:UUID(),kind:.motionDetail,directory:root.path,requestSHA256:ExecutionFocusSelfTests.hashA,originalSHA256:ExecutionFocusSelfTests.hashB)
+            let legacyBytes = try JSONEncoder().encode(legacyRecord)
+            try check("旧六条实验无需迁移",try JSONDecoder().decode(H3FidelityRecord.self,from:legacyBytes).referenceEngine == nil,"optional runtime binding preserves historical records")
+            let nativeSource = root.appendingPathComponent("native-source"),nativeTrial = root.appendingPathComponent("native-trial")
+            try FileManager.default.createDirectory(at:nativeSource,withIntermediateDirectories:false)
+            try FileManager.default.createDirectory(at:nativeTrial,withIntermediateDirectories:false)
+            let registryBytes = Data("fixture-only registry snapshot".utf8)
+            try registryBytes.write(to:nativeSource.appendingPathComponent("data.mdb"))
+            let isolated = try H3ReferenceEngine.prepareSession(workDirectory:nativeSource.path,diagnosticDirectory:nativeTrial.path)
+            let sessionConfig = try JSONSerialization.jsonObject(with:Data(contentsOf:isolated.config)) as! [String:[String:String]]
+            try check("新引擎数据库使用独立快照",sessionConfig["db"]?["path"] == isolated.directory.path && isolated.directory.path.hasPrefix(nativeTrial.path),"explicit db.path prevents new engine migration of original registry")
+            try Data("new engine fixture writes".utf8).write(to:isolated.directory.appendingPathComponent("data.mdb"))
+            try check("隔离数据库变化不影响原登记",try Data(contentsOf:nativeSource.appendingPathComponent("data.mdb")) == registryBytes,"not a symlink or shared database")
+            try check("不会覆盖已存在的隔离运行",rejected { _ = try H3ReferenceEngine.prepareSession(workDirectory:nativeSource.path,diagnosticDirectory:nativeTrial.path) },"exclusive snapshot destination")
             var base = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionBaseDetail,proposal:proposal,directory:root.path)) as! [String:Any]
             let turboStages = turbo["stages"] as! [[String:Any]]
             var baseStages = base["stages"] as! [[String:Any]]

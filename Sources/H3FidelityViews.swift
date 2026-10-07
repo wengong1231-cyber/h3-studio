@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct H3FidelitySheet: View {
     @ObservedObject var store: TaskStore
@@ -20,6 +21,20 @@ struct H3FidelitySheet: View {
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             Text("首尾同图对照仅在8步仍有身份漂移并留证后开放：沿用同图、同Prompt、同种子和8步，只将同一原图也接入末帧。它是22帧约束试验，不是完整碰撞动作，也不是持续身份锁；中间帧仍须检查。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
+            HStack(alignment:.top) {
+                if let engine = job?.h3ReferenceEngine {
+                    Text("隔离 Vpipe " + engine.manifest.version + " 已登记 · 已用 \((job?.h3FidelityChecks ?? []).filter { $0.referenceEngine != nil }.count)/2 次授权。参考模式会把原图编码进模型；它是零样本能力，不固定首帧，也不保证同脸。每次仍需检查22帧样本。")
+                        .font(.system(size:11)).foregroundStyle(.secondary)
+                    if let proposal = job?.h3Binding?.appFirstTask?.proposal {
+                        Button("复制参考对照Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(H3ReferenceEngine.prompt(proposal),forType:.string) }
+                    }
+                } else {
+                    Button("登记已授权隔离引擎") { chooseReferenceEngine() }
+                        .disabled(!store.singleGeneratorIdle || job?.shot != 26).accessibilityIdentifier("fidelity.register-engine")
+                    Text("导入固定版本及明确授权；先核官方签名、现有视觉权重，再开放参考对照。登记不启动GPU。")
+                        .font(.system(size:11)).foregroundStyle(.secondary)
+                }
+            }
             LazyVGrid(columns:Array(repeating:GridItem(.flexible(),alignment:.leading),count:3),alignment:.leading) {
                 ForEach(H3FidelityKind.allCases) { kind in
                     Button(kind.title) { Task { await store.startFidelity(jobID,kind:kind) } }
@@ -77,6 +92,14 @@ struct H3FidelitySheet: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.system(size:11)) }
         }.padding(22).frame(width:920,height:720)
+    }
+    private func chooseReferenceEngine() {
+        let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK,let url = panel.url {
+                Task { do { try await store.registerReferenceEngine(url,jobID:jobID);error = nil } catch { self.error = error.localizedDescription } }
+            }
+        }
     }
     private func image(_ path: String,title: String,revision: String) -> some View {
         VStack(alignment:.leading,spacing:6) {

@@ -4,8 +4,8 @@ enum AppIdentity {
     static let name = "镜生 H3"
     static let bundleID = "com.wengong.WanshenjiH3Studio"
     static let executable = "WanshenjiH3Studio"
-    static let version = "0.4.26"
-    static let buildNumber = "33"
+    static let version = "0.4.27"
+    static let buildNumber = "34"
     static let ffmpeg = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/ffmpeg").path
     static let originalProject = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/text2image").path
     static let modelStatusRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Codex/2026-10-05/task/h3-restore", isDirectory: true)
@@ -89,6 +89,7 @@ struct ShotJob: Identifiable, Codable {
     var h3ABAcceptance: H3ABAcceptanceState?
     var h3VideoRejection: H3VideoRejectionState?
     var h3FidelityChecks: [H3FidelityRecord]?
+    var h3ReferenceEngine: H3ReferenceEngineBinding?
     var h3InputRecoveries: [H3IndependentInputRecovery]?
     var supersededBy: UUID?
     var redoOf: UUID?
