@@ -14,7 +14,7 @@ struct H3VideoRejectionSheet: View {
                 Label("拒绝 " + job.shortID + " 候选",systemImage:"xmark.circle").font(.system(size:19,weight:.semibold))
                 Spacer();Button("关闭") { dismiss() }.disabled(busy)
             }
-            Text("保存拒绝原因，停止后续段采用这条视频。原候选、技术检查和原验收保留；重做会另建任务。")
+            Text("保存拒绝原因，停止后续段采用这条视频。重做会成为此任务的新版本；原候选、技术检查和原验收保留在历史中。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             if let rejection = current?.h3VideoRejection {
                 Text(rejection.reason).font(.system(size:12,weight:.medium))

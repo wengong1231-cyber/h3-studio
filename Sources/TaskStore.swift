@@ -381,20 +381,20 @@ import Darwin
         await checkFirstPixelReviews()
     }
     func canMovePending(_ id: UUID, offset: Int) -> Bool {
-        let pending = state.jobs.filter { $0.status.isPending }
+        let pending = pendingReorderIndices.map { state.jobs[$0] }
         guard abs(offset) == 1, let index = pending.firstIndex(where: { $0.id == id }) else { return false }
         return pending.indices.contains(index + offset)
     }
     @discardableResult func movePending(_ id: UUID, offset: Int) -> Bool {
         guard canMovePending(id, offset: offset) else { return false }
-        let indices = state.jobs.indices.filter { state.jobs[$0].status.isPending && state.jobs[$0].externalHistory == nil }
+        let indices = pendingReorderIndices
         guard let position = indices.firstIndex(where: { state.jobs[$0].id == id }) else { return false }
         state.jobs.swapAt(indices[position], indices[position + offset])
         persist(); return true
     }
     @discardableResult func movePending(_ id: UUID, before targetID: UUID) -> Bool {
         guard id != targetID else { return false }
-        let indices = state.jobs.indices.filter { state.jobs[$0].status.isPending && state.jobs[$0].externalHistory == nil }
+        let indices = pendingReorderIndices
         var pending = indices.map { state.jobs[$0] }
         let previous = pending.map(\.id)
         guard let source = pending.firstIndex(where: { $0.id == id }), pending.contains(where: { $0.id == targetID }) else { return false }
@@ -404,6 +404,9 @@ import Darwin
         guard previous != pending.map(\.id) else { return false }
         for (index, job) in zip(indices, pending) { state.jobs[index] = job }
         persist(); return true
+    }
+    private var pendingReorderIndices: [Int] {
+        state.jobs.indices.filter { state.jobs[$0].status.isPending && state.jobs[$0].externalHistory == nil && state.jobs[$0].supersededBy == nil }
     }
     private func launchNext() {
         guard singleGeneratorIdle, !state.queuePaused, let next = fixtureQueueCandidates.first,

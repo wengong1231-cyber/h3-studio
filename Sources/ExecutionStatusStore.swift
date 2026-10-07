@@ -84,7 +84,7 @@ extension TaskStore {
                 p.nextStep = "后续只绑定当前重做任务的输出；原候选、检查和日志保留。"
             } else if let rejected = job.h3VideoRejection {
                 p.state = rejected.actorKind == "user" ? "用户已拒绝候选 · 等待重做" : "候选已拒绝 · 界面来源记录";p.shortState = "已拒绝";p.tone = .attention
-                p.detail = rejected.reason;p.nextStep = "拒绝与原候选保留；重做将新建身份并撤销下游旧端点。"
+                p.detail = rejected.reason;p.nextStep = "重做会成为此任务的新版本；拒绝原因和原候选留在历史中，续段等待新版通过验收。"
             } else if job.h3VideoReview?.isTrustedAcceptance == true {
                 p.state = "本段已接受 · 风险与操作记录保留";p.shortState = "已接受"
                 p.nextStep = plan.part < plan.partCount ? (job.videoContinuationAuthorized ? "可继续准备下一段，无需再次确认本段。" : "本段接受已记录；续段授权尚未明确，没有启动下一段。") : "此镜头的候选接受已记录。"

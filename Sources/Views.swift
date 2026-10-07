@@ -76,16 +76,9 @@ struct StudioView: View {
     @State private var models = false
     @State private var inspectorTab = 0
     private var palette: Palette { Palette(scheme: scheme) }
-    private var jobs: [ShotJob] {
-        store.state.jobs.filter { job in
-            switch filter {
-            case "active": return [.queued, .running, .cancelling, .blocked].contains(job.status)
-            case "completed": return job.status == .completed
-            case "errors": return [.failed, .interrupted].contains(job.status)
-            default: return true
-            }
-        }
-    }
+    private var taskGroups: [TaskVersionGroup] { TaskVersionGrouping.project(store.state.jobs) }
+    private var jobs: [TaskVersionGroup] { taskGroups.filter { $0.matches(filter) } }
+    private var selectedGroup: TaskVersionGroup? { taskGroups.first { $0.contains(store.selectedID) } }
     var body: some View {
         HStack(spacing: 0) {
             sidebar.frame(width: 164)
@@ -151,10 +144,10 @@ struct StudioView: View {
                 }
             }.padding(.top, 25).padding(.bottom, 33)
             Text("工作区").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).padding(.bottom, 11).padding(.leading, 12)
-            navigation("镜头队列", icon: "square.stack.3d.up", value: "all", count: store.state.jobs.count)
-            navigation("等待与生成", icon: "waveform.path", value: "active", count: store.state.jobs.filter { [.queued, .running, .cancelling, .blocked].contains($0.status) }.count)
-            navigation("候选输出", icon: "play.rectangle", value: "completed", count: store.completedCount)
-            navigation("需要处理", icon: "exclamationmark.circle", value: "errors", count: store.failedCount)
+            navigation("镜头队列", icon: "square.stack.3d.up", value: "all", count: taskGroups.count)
+            navigation("等待与生成", icon: "waveform.path", value: "active", count: taskGroups.filter { $0.matches("active") }.count)
+            navigation("候选输出", icon: "play.rectangle", value: "completed", count: taskGroups.filter { $0.matches("completed") }.count)
+            navigation("需要处理", icon: "exclamationmark.circle", value: "errors", count: taskGroups.filter { $0.matches("errors") }.count)
             Rectangle().fill(palette.border).frame(height: 1).padding(.vertical, 21).padding(.horizontal, 12)
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { metrics.toggle(); models = false }
@@ -276,7 +269,7 @@ struct StudioView: View {
                         .help("串行启动 CPU 合成验证。H3 镜头使用各自的开始按钮，自动完成后续流程。")
                 }
             }.padding(.horizontal, 20).padding(.bottom, 14)
-            Text("待执行镜头可上移、下移或拖到另一条待执行镜头前；运行中的镜头保持不变。")
+            Text("重做收在同一任务的版本历史中；每行显示当前版本。待执行项可上移、下移或拖动排序。")
                 .font(.system(size: 9)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 10)
             HStack {
                 Text("参考 / 镜头"); Spacer(); Text("阶段与状态"); Text("耗时").frame(width: 42, alignment: .trailing)
@@ -287,19 +280,22 @@ struct StudioView: View {
                 ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(spacing: 5) {
-                        ForEach(jobs) { job in
-                            ShotRow(job: job, selected: store.selectedID == job.id,
+                        ForEach(jobs) { group in
+                            let job = group.current
+                            ShotRow(job: job, title: group.title, versionCount: group.versions.count,
+                                    relationshipIssue: group.relationshipIssue, selected: group.contains(store.selectedID),
                                     canMoveUp: store.canMovePending(job.id, offset: -1), canMoveDown: store.canMovePending(job.id, offset: 1),
                                     select: { store.selectedID = job.id; inspectorTab = 0 },
                                     moveUp: { store.movePending(job.id, offset: -1) }, moveDown: { store.movePending(job.id, offset: 1) },
                                     cancel: { cancelQueueTaskFromUI(job.id, store: store) }, retry: { store.retry(job.id) },
-                                    drop: { sourceID in store.movePending(sourceID, before: job.id) }).id(job.id)
+                                    drop: { sourceID in store.movePending(sourceID, before: job.id) }).id(group.id)
                         }
                     }.padding(12)
                 }
                 .task(id:store.navigationIntent?.id) {
                     guard let id = store.navigationIntent?.destination.selectedID else { return }
-                    await Task.yield();reader.scrollTo(id,anchor:.center)
+                    guard let group = taskGroups.first(where: { $0.contains(id) }) else { return }
+                    await Task.yield();reader.scrollTo(group.id,anchor:.center)
                 }
                 }
             }
@@ -336,7 +332,27 @@ struct StudioView: View {
                     Spacer()
                     StatusPill(status: job.status,title:job.displayStatusLabel)
                 }.padding(.bottom, 10)
-                Text(job.title).font(.system(size: 17, weight: .semibold)).lineLimit(2).padding(.bottom, 7)
+                Text(selectedGroup?.title ?? job.title).font(.system(size: 17, weight: .semibold)).lineLimit(2).padding(.bottom, 7)
+                if let group = selectedGroup, group.hasHistory {
+                    Picker("任务版本", selection: Binding(get: { job.id }, set: { id in
+                        _ = store.navigateToTask(id, from: navigationLocation)
+                    })) {
+                        ForEach(group.versions.reversed()) { version in
+                            Text("第\(group.versionNumber(version.id))版 · " + (version.id == group.current.id ? "当前" : "历史") + " · " + version.displayStatusLabel)
+                                .tag(version.id)
+                        }
+                    }.labelsHidden().accessibilityLabel("任务版本").accessibilityIdentifier("task-version.picker").padding(.bottom, 6)
+                    HStack {
+                        Button("全部 \(group.versions.count) 个版本", systemImage: "clock.arrow.circlepath") { inspectorTab = 2 }
+                        Spacer(minLength: 4)
+                        if job.id != group.current.id {
+                            Button("回到当前版本") { _ = store.navigateToTask(group.current.id, from: navigationLocation) }
+                        }
+                    }.buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(Color.studioGold).padding(.bottom, 8)
+                }
+                if let issue = selectedGroup?.relationshipIssue {
+                    Text(issue).font(.system(size: 10)).foregroundStyle(Color.orange).padding(.bottom, 8)
+                }
                 Text(job.segment + " · " + job.engine.label).font(.system(size: 9)).foregroundStyle(.secondary).padding(.bottom, 18)
                 Picker("镜头详情", selection: $inspectorTab) { Text("详情").tag(0); Text("日志").tag(1); Text("历史").tag(2) }
                     .pickerStyle(.segmented).padding(.bottom, 16)
@@ -590,6 +606,13 @@ struct StudioView: View {
     }
     private func history(_ job: ShotJob) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let group = selectedGroup, group.hasHistory {
+                TaskVersionHistory(group: group, selectedID: job.id) { id in
+                    _ = store.navigateToTask(id, from: navigationLocation)
+                }
+                Divider()
+                Text("第\(group.versionNumber(job.id))版的执行记录").font(.system(size: 11, weight: .medium))
+            }
             if let revision = job.h3FirstProposal?.queueExecution?.actionRevision {
                 VStack(alignment:.leading,spacing:8) {
                     Text("动作修订 r\(revision.number)").font(.system(size:12,weight:.medium))
@@ -689,6 +712,9 @@ struct StudioView: View {
 
 struct ShotRow: View {
     var job: ShotJob
+    var title: String
+    var versionCount: Int
+    var relationshipIssue: String?
     var selected: Bool
     var canMoveUp: Bool
     var canMoveDown: Bool
@@ -741,9 +767,13 @@ struct ShotRow: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 5) {
                         Text(job.shortID).font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(Color.studioGold)
-                        Text(job.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                        Text(title).font(.system(size: 11, weight: .medium)).lineLimit(1)
                     }
                     Text(job.engine == .fixture ? "合成验证 · 48 帧 · CPU" : job.segment).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                    if versionCount > 1 {
+                        Text("当前第\(versionCount)版 · 历史 \(versionCount - 1) 版").font(.system(size: 9)).foregroundStyle(Color.studioGold)
+                    }
+                    if relationshipIssue != nil { Text("重做关系待核对").font(.system(size: 9)).foregroundStyle(Color.orange) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 5) {
                     StatusPill(status: job.status,title:job.displayStatusLabel)
@@ -752,7 +782,8 @@ struct ShotRow: View {
                 Text(job.elapsedLabel).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
             }
         }.buttonStyle(.plain)
-            .accessibilityLabel("\(job.shortID)，\(job.title)，\(job.engine.label)，\(job.status.label)，\(job.progress?.label ?? job.stage)")
+            .accessibilityLabel("\(job.shortID)，\(title)，当前第\(versionCount)版，\(job.engine.label)，\(job.displayStatusLabel)，\(job.progress?.label ?? job.stage)")
+            .accessibilityIdentifier("task-row.current.\(job.id.uuidString)")
     }
 }
 

@@ -98,6 +98,9 @@ import AppKit
             try check("旧结果指纹不符禁用",RedoRouteResolver.resolve(.init(jobID:ready.id,revision:1,frozenStateSHA256:hashB),jobs:[r2]).target == nil,"version number alone is insufficient")
             let decoded = try JSONDecoder().decode(ShotJob.self,from:JSONEncoder().encode(r3))
             try check("修订导航关系持久化",decoded.resultRevisionLinks == r3.resultRevisionLinks,"optional field remains backward compatible")
+            try TaskVersionGroupingSelfTests.run(check: check)
+            var otherPart = successor; otherPart.h3QueuePlan?.part = 2;otherPart.supersededBy = nil
+            try check("不同分段不能归成同一任务",TaskVersionGrouping.project([original,otherPart]).count == 2,"even conflicting explicit links cannot merge different parts")
             let workspace = root.appendingPathComponent("workspace"),locations = ExternalLocations(originalProject:root.path,modelStatusRoot:root.path,ffmpeg:AppIdentity.ffmpeg)
             let value = try TaskStore(root:workspace,executable:executable,monitoring:false,locations:locations,h3Runtime:.mock(root:root,executable:executable));store = value
             value.add(original);value.add(successor);value.add(third);value.selectedID = original.id
@@ -109,12 +112,20 @@ import AppKit
             try check("可定位历史重做任务",value.navigateToRedo(origin,from:location,historyTarget:successor.id) && value.selectedID == successor.id,"uses selected recorded target")
             _ = value.returnFromTaskNavigation()
             try check("导航零GPU及写入副作用",value.launchCount == 0 && value.activeJob == nil && (try stateEncoder.encode(value.state)) == stateBefore && (try Data(contentsOf:workspace.appendingPathComponent("state.json"))) == diskBefore && !FileManager.default.fileExists(atPath:workspace.appendingPathComponent("h3-dispatch").path),"selection only: no dispatch, queue change, receipt or state write")
+            let groups = TaskVersionGrouping.project(value.state.jobs)
+            try check("真实导航映射到归组行",groups.count == 1 && groups[0].contains(value.selectedID) && groups[0].current.id == third.id,"existing navigation and version projection agree")
             value.state.jobs = [r2];value.selectedID = r2.id
             let token = value.navigationIntent?.id
             try check("同UUID导航刷新详情路由",value.navigateToRedo(oldVersion,from:.init(selectedID:r2.id,filter:"errors",inspectorTab:2)) && value.selectedID == r2.id && value.navigationIntent?.id != token,"fresh route token reopens details even when UUID is unchanged")
             value.state.jobs = [a,b];value.persist()
             _ = value.movePending(b.id,offset:-1)
             try check("真实重排与投影视图一致",value.fixtureQueueCandidates.first?.id == b.id && value.executionFocus().next?.job.id == b.id,"same scheduler candidates, not separate UI sorting")
+            var historicalPending = a; historicalPending.supersededBy = b.id
+            var currentPending = b; currentPending.redoOf = a.id
+            var independent = a; independent.id = UUID()
+            value.state.jobs = [historicalPending,currentPending,independent];value.persist()
+            try check("重排只操作当前版本",!value.canMovePending(historicalPending.id,offset:1) && value.movePending(independent.id,offset:-1) && value.state.jobs[0].id == historicalPending.id,"hidden historical IDs cannot be reordered as current work")
+            try check("拖动不能指向历史版本",!value.movePending(currentPending.id,before:historicalPending.id),"drag payload remains the exact current execution ID")
             value.state.jobs = [blocked,ready];value.persist()
             try check("H3调度候选与下一项一致",value.plannedPreparationCandidates.first?.id == ready.id && value.executionFocus().next?.job.id == ready.id && value.canPreparePlannedJob(ready.id),"skip blocked head in both code paths")
             var queuedH3 = blocked;queuedH3.status = .queued
