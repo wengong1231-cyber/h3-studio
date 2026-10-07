@@ -19,7 +19,8 @@ import ImageIO
             try check("高细节输入从完整原图取样",detail.image.width == 1536 && detail.image.height == 896 && abs(detail.scale - baseline.scale*2) < 0.00001 && detail.padding.allSatisfy({ $0 >= 0 }),"no generated-video upscaling or cropping")
             try check("任意大尺寸不能越过资源档位",rejected { _ = try H3SourceFrames.contain(image,canvasWidth:8192,canvasHeight:8192) },"only two bounded resolutions")
             let proposal = ExecutionFocusSelfTests.revised(ExecutionFocusSelfTests.planned(shot:26,priority:0),number:2,previousHash:ExecutionFocusSelfTests.hashA).h3FirstProposal!
-            for kind in H3FidelityKind.allCases {
+            try H3FidelityPairSelfTests.run(root:root.appendingPathComponent("paired-fixtures"),proposal:proposal,executable:executable,check:check)
+            for kind in H3FidelityKind.allCases where kind != .motionPairedKeyframes {
                 let graph = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:kind,proposal:proposal,directory:root.path)) as! [String:Any]
                 let stages = graph["stages"] as! [[String:Any]],ids = Set(stages.compactMap { $0["id"] as? String })
                 let allPorts = stages.flatMap { $0["iports"] as! [[String:Any]] }

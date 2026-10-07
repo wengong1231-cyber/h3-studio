@@ -43,6 +43,9 @@ struct H3FidelityGuidance: Codable, Equatable {
         case .codecDistortion:
             return .init(title:"未通过：编解码后人脸已改变",codeHandling:"这是编解码对照的差异，提示词不会参与这一步。开发需先检查像素归一、潜在帧布局和引擎实现。",nextStep:"保留本次输出并诊断编解码；不能靠修改动作提示词重试。",requiredInputs:"当前无需补图；已有原图、实际输入、输出帧和引擎日志足以开始定位。")
         case .motionIdentityDrift:
+            if kind == .motionPairedKeyframes {
+                return .init(title:"未通过：不同首尾姿态之间仍改变人脸",codeHandling:"两张经过助手图审的完整姿态图已分别接入首尾条件；生成中间帧仍可能改变脸部，不能当作持续身份锁。",nextStep:"保留两张实际输入和生成帧，区分输入之间的差异、首尾重建差异和中间运动漂移；先修正已定位的条件再试，不原样重跑。",requiredInputs:"已有A/B及Prompt无需重复提交；若需要新的中间或回稳姿态，由助手复用原图准备并检查。")
+            }
             if kind == .motionIsolatedBaseline {
                 return .init(title:"未通过：新版单首帧仍改变人脸",codeHandling:"本次只切换已登记引擎，沿用旧8步单首帧管线。若原图身份仍改变，新引擎或参考模式接线成功都不能算修复完成。",nextStep:"保留原图、两种引擎与参考模式的像素证据；停止同配置重试。先准备能验证差异的关键姿态，再按当前次数设置推进。新模型或引擎仍需明确授权。",requiredInputs:"当前无需重复提供已有READY。先利用现有素材准备下一方案；确实无法取得的同脸关键姿态或组件再明确列出。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
             }

@@ -3,24 +3,25 @@ import ImageIO
 import Darwin
 
 enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
-    case codecBaseline, codecDetail, motionDetail, motionBaseDetail, motionKeyframeDetail, motionReferenceDetail, motionIsolatedBaseline
+    case codecBaseline, codecDetail, motionDetail, motionBaseDetail, motionKeyframeDetail, motionReferenceDetail, motionIsolatedBaseline, motionPairedKeyframes
     var id: String { rawValue }
     var width: Int { self == .codecBaseline ? 768 : 1536 }
     var height: Int { self == .codecBaseline ? 448 : 896 }
     var frames: Int { 22 }
     var isMotion: Bool { self == .motionDetail || usesBaseModel }
     var usesIsolatedEngine: Bool { self == .motionReferenceDetail || self == .motionIsolatedBaseline }
-    var usesBaseModel: Bool { self == .motionBaseDetail || self == .motionKeyframeDetail || usesIsolatedEngine }
+    var usesBaseModel: Bool { self == .motionBaseDetail || self == .motionKeyframeDetail || self == .motionPairedKeyframes || usesIsolatedEngine }
     var comparisonKind: Self? {
         switch self {
         case .motionBaseDetail: return .motionDetail
         case .motionKeyframeDetail: return .motionBaseDetail
         case .motionReferenceDetail: return .motionKeyframeDetail
         case .motionIsolatedBaseline: return .motionBaseDetail
+        case .motionPairedKeyframes: return .motionKeyframeDetail
         default: return nil
         }
     }
-    var maximumSeconds: TimeInterval { self == .motionKeyframeDetail || usesIsolatedEngine ? 2400 : 1800 }
+    var maximumSeconds: TimeInterval { self == .motionKeyframeDetail || self == .motionPairedKeyframes || usesIsolatedEngine ? 2400 : 1800 }
     func steps(_ proposal: H3FirstProposal) -> Int { usesBaseModel ? 8 : (isMotion ? proposal.profile.steps : 0) }
     var title: String {
         switch self {
@@ -31,6 +32,7 @@ enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
         case .motionKeyframeDetail: return "1536 首尾同图对照"
         case .motionReferenceDetail: return "1536 隔离引擎参考图对照"
         case .motionIsolatedBaseline: return "1536 新引擎单首帧基线"
+        case .motionPairedKeyframes: return "1536 不同首尾姿态对照"
         }
     }
 }
@@ -64,6 +66,7 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var referenceEngine: H3ReferenceEngineBinding?
     var referenceTrial: H3FidelityBaseline?
     var referenceTrialPolicy: H3ReferenceTrialPolicyBinding?
+    var pairedInput: H3FidelityPairBinding?
     var isActive: Bool { ["starting","running","cancelling"].contains(status) }
     var inputPath: String { directory + "/input.png" }
     var reportPath: String { directory + "/report.json" }
@@ -86,6 +89,7 @@ struct H3FidelityRequest: Codable {
     var referenceEngine: H3ReferenceEngineBinding?
     var referenceTrial: H3FidelityBaseline?
     var referenceTrialPolicy: H3ReferenceTrialPolicyBinding?
+    var pairedInput: H3FidelityPairBinding?
     var directory: String { workspace + "/h3-fidelity/" + appJobID.uuidString + "/" + id.uuidString }
     var url: URL { URL(fileURLWithPath:directory + "/request.json") }
     func ownerPresent() -> Bool {
@@ -106,6 +110,7 @@ struct H3FidelityRequest: Codable {
               record.referenceEngine == referenceEngine,
               record.referenceTrial == referenceTrial,
               record.referenceTrialPolicy == referenceTrialPolicy,
+              record.pairedInput == pairedInput,
               record.requestSHA256 == H3ABConfigurationReader.digest(bytes),
               parent.status != .cancelled,parent.supersededBy == nil,
               let proposal = binding.appFirstTask?.proposal,proposal.input?.originalSHA256 == record.originalSHA256,
@@ -116,6 +121,10 @@ struct H3FidelityRequest: Codable {
         guard verified.jobSHA256 == binding.jobSHA256,verified.appTaskID == appJobID else {
             throw StudioError.invalid("原任务身份变化，未开始保真对照。")
         }
+        if kind == .motionPairedKeyframes {
+            guard let pairedInput,parent.h3FidelityPairs?.last == pairedInput else { throw StudioError.invalid("不同姿态请求与当前A/B图审绑定不同。") }
+            try pairedInput.validate(jobID:appJobID,binding:binding,workspace:workspace,requireReview:true)
+        } else if pairedInput != nil { throw StudioError.invalid("旧对照不能冒用新A/B输入。") }
         if kind.usesIsolatedEngine {
             guard let referenceEngine,referenceEngine == parent.h3ReferenceEngine,parent.shot == 26 else {
                 throw StudioError.invalid("参考对照未绑定App隔离引擎登记。")
@@ -212,10 +221,14 @@ enum H3Fidelity {
         }
         return input
     }
-    static func pipeline(kind: H3FidelityKind,proposal: H3FirstProposal,directory: String) throws -> Data {
+    static func pipeline(kind: H3FidelityKind,proposal: H3FirstProposal,directory: String,pairedInput: H3FidelityPairBinding? = nil) throws -> Data {
         let template = try H3Files.readTemplateFallback()
         guard H3ABConfigurationReader.digest(template) == H3ABTaskBinding.templateSHA256 else { throw StudioError.invalid("保真管线模板指纹不同。") }
         var p = proposal
+        if kind == .motionPairedKeyframes {
+            guard let pairedInput,pairedInput.reviewed else { throw StudioError.invalid("不同A/B缺少通过的助手图审。") }
+            p.prompt = pairedInput.receipt.plan.prompt;p.promptSHA256 = pairedInput.receipt.plan.promptSHA256
+        } else if pairedInput != nil { throw StudioError.invalid("旧管线不能使用不同A/B图。") }
         p.profile.width = kind.width;p.profile.height = kind.height;p.profile.frames = kind.frames
         if kind.isMotion { p.profile.steps = kind.steps(proposal) }
         var graph = try JSONSerialization.jsonObject(with:H3FirstTaskBinding.pipeline(template:template,id:URL(fileURLWithPath:directory).lastPathComponent,
@@ -264,6 +277,19 @@ enum H3Fidelity {
                 // it is not a supplied contact pose or a continuous face lock.
                 var ports = stage["iports"] as! [[String:Any]]
                 ports[6] = ["src":"vae-encode-A","oport":0]
+                stage["iports"] = ports
+            }
+            if id == "generate-video" && kind == .motionPairedKeyframes {
+                // Both images have already been contained from their originals
+                // and reviewed. B is a real final-pose latent, not gallery data.
+                guard let loadA = result.first(where:{ $0["id"] as? String == "load-A" }),
+                      let vaeA = result.first(where:{ $0["id"] as? String == "vae-encode-A" }) else { throw StudioError.invalid("缺少可复用的首尾编码阶段。") }
+                var loadB = loadA,vaeB = vaeA,loadConfig = loadA["config"] as! [String:Any]
+                loadB["id"] = "load-B";loadConfig["url"] = [directory + "/input-B.png"];loadB["config"] = loadConfig
+                vaeB["id"] = "vae-encode-B";vaeB["iports"] = [["src":"load-B","oport":0],["src":"model-select","oport":0]]
+                result.append(loadB);result.append(vaeB)
+                var ports = stage["iports"] as! [[String:Any]]
+                ports[5] = ["src":"vae-encode-A","oport":0];ports[6] = ["src":"vae-encode-B","oport":0]
                 stage["iports"] = ports
             }
             if id == "save-detail-frames" { config["path"] = directory + "/frames/frame-%04d.png" }
@@ -319,9 +345,10 @@ enum H3Fidelity {
                   request.referenceEngine == record.referenceEngine,
                   request.referenceTrial == record.referenceTrial,
                   request.referenceTrialPolicy == record.referenceTrialPolicy,
+                  request.pairedInput == record.pairedInput,
                   let proposal = request.binding.appFirstTask?.proposal else { throw StudioError.invalid("原模型对照请求或比较基线发生变化。") }
             let actual = try H3Files.read(H3Files.inside(record.directory + "/pipeline.vpipeline",record.directory))
-            let expected = try pipeline(kind:record.kind,proposal:proposal,directory:record.directory)
+            let expected = try pipeline(kind:record.kind,proposal:proposal,directory:record.directory,pairedInput:request.pairedInput)
             guard actual == expected,report["pipelineSHA256"] as? String == H3ABConfigurationReader.digest(actual),
                   report["steps"] as? Int == 8,report["turboAdapterUsed"] as? Bool == false,
                   report["seed"] as? Int == proposal.seed,report["promptSHA256"] as? String == proposal.promptSHA256,
@@ -340,6 +367,21 @@ enum H3Fidelity {
                       report["persistentIdentityReferenceUsed"] as? Bool == false else {
                     throw StudioError.invalid("首尾同图对照缺少真实末帧绑定，不能冒称持续身份约束。")
                 }
+            }
+            if record.kind == .motionPairedKeyframes {
+                guard let pair = request.pairedInput else { throw StudioError.invalid("缺少实际不同首尾输入。") }
+                try pair.validate(jobID:appJobID,binding:request.binding,workspace:request.workspace,requireReview:true)
+                guard report["pairPreparationSHA256"] as? String == pair.receiptSHA256,
+                      report["pairReviewSHA256"] as? String == pair.reviews.last?.sha256,
+                      report["effectivePromptSHA256"] as? String == pair.receipt.plan.promptSHA256,
+                      report["inputSHA256"] as? String == pair.receipt.firstNormalized.sha256,
+                      report["lastKeyframeInputSHA256"] as? String == pair.receipt.lastNormalized.sha256,
+                      report["lastKeyframeInputSHA256"] as? String == (try WorkspaceDigest.sha256(H3Files.inside(record.directory + "/input-B.png",record.directory))),
+                      report["differentKeyframeImages"] as? Bool == true,report["persistentIdentityReferenceUsed"] as? Bool == false,
+                      report["identityLockVerified"] as? Bool == false else { throw StudioError.invalid("不同首尾条件或实际Prompt未在报告中得到核验。") }
+                let log = try H3Files.read(H3Files.inside(record.directory + "/native.log",record.directory))
+                guard report["nativeLogSHA256"] as? String == H3ABConfigurationReader.digest(log) else { throw StudioError.invalid("不同姿态对照日志已改变。") }
+                try validatePairedLog(String(decoding:log,as:UTF8.self))
             }
             if record.kind.usesIsolatedEngine {
                 guard let engine = request.referenceEngine,
@@ -376,6 +418,12 @@ enum H3Fidelity {
             }
         }
         return bytes
+    }
+    static func validatePairedLog(_ log: String) throws {
+        guard log.contains("VaeEncodeStage('vae-encode-A')"),log.contains("VaeEncodeStage('vae-encode-B')"),
+              log.contains("DiffusionConditionerStage('diffusion-conditioner')") else {
+            throw StudioError.invalid("原生日志没有证明两张姿态图实际编码。")
+        }
     }
     static func validateIsolatedMode(_ kind: H3FidelityKind,report: [String:Any],log: String,proposal: H3FirstProposal) throws {
         let isReference = kind == .motionReferenceDetail
@@ -441,7 +489,12 @@ enum H3FidelityWorker {
             try H3SourceFrames.technicalImage(input.originalPath,hash:input.originalSHA256,width:input.originalWidth,height:input.originalHeight)
             let original = try H3Files.read(H3Files.safe(input.originalPath),limit:50_331_648)
             try original.write(to:directory.appendingPathComponent("original.png"),options:.withoutOverwriting)
-            if kind == .codecBaseline {
+            if let pair = r.pairedInput {
+                for (image,name) in [(pair.receipt.firstNormalized,"input.png"),(pair.receipt.lastNormalized,"input-B.png"),(pair.receipt.lastOriginal,"original-B.png")] {
+                    try image.validate(inside:pair.directory)
+                    try H3Files.read(H3Files.safe(image.path),limit:50_331_648).write(to:directory.appendingPathComponent(name),options:.withoutOverwriting)
+                }
+            } else if kind == .codecBaseline {
                 try H3SourceFrames.technicalImage(input.normalizedPath,hash:input.normalizedSHA256,width:768,height:448)
                 try H3Files.read(H3Files.safe(input.normalizedPath),limit:50_331_648).write(to:directory.appendingPathComponent("input.png"),options:.withoutOverwriting)
             } else {
@@ -456,7 +509,7 @@ enum H3FidelityWorker {
                     throw StudioError.invalid("本次归一输入与旧运动对照不同，未启动GPU。")
                 }
             }
-            let graph = try H3Fidelity.pipeline(kind:kind,proposal:proposal,directory:r.directory)
+            let graph = try H3Fidelity.pipeline(kind:kind,proposal:proposal,directory:r.directory,pairedInput:r.pairedInput)
             let pipeline = directory.appendingPathComponent("pipeline.vpipeline")
             try graph.write(to:pipeline,options:.withoutOverwriting)
             try FileManager.default.createDirectory(at:directory.appendingPathComponent("frames"),withIntermediateDirectories:false)
@@ -515,6 +568,20 @@ enum H3FidelityWorker {
                 report["sameImageAtBothKeyframes"] = true
                 report["lastKeyframeInputSHA256"] = inputHash
                 report["persistentIdentityReferenceUsed"] = false
+            }
+            if let pair = r.pairedInput {
+                try pair.validate(jobID:r.appJobID,binding:r.binding,workspace:r.workspace,requireReview:true)
+                guard try WorkspaceDigest.sha256(directory.appendingPathComponent("input-B.png")) == pair.receipt.lastNormalized.sha256 else { throw StudioError.invalid("末帧图在运行期间发生变化。") }
+                let nativeLog = try H3Files.read(directory.appendingPathComponent("native.log"))
+                try H3Fidelity.validatePairedLog(String(decoding:nativeLog,as:UTF8.self))
+                report["nativeLogSHA256"] = H3ABConfigurationReader.digest(nativeLog)
+                report["pairPreparationSHA256"] = pair.receiptSHA256
+                report["pairReviewSHA256"] = pair.reviews.last!.sha256
+                report["effectivePromptSHA256"] = pair.receipt.plan.promptSHA256
+                report["lastKeyframeInputSHA256"] = pair.receipt.lastNormalized.sha256
+                report["differentKeyframeImages"] = true
+                report["persistentIdentityReferenceUsed"] = false
+                report["identityLockVerified"] = false
             }
             if kind.usesIsolatedEngine,let engine = r.referenceEngine {
                 try engine.validate(jobID:r.appJobID,workspace:r.workspace,workDirectory:proposal.workDirectory)

@@ -17,7 +17,7 @@ struct H3FidelitySheet: View {
                 Text((job?.shortID ?? "") + " · 人脸保真对照").font(.title2)
                 Spacer();Button("关闭") { dismiss() }
             }
-            Text("先检查静态编解码损失，再检查运动生成漂移。1536输入直接来自完整原图。原模型8步对照沿用此前短段的原图、尺寸、种子和提示词，只移除Turbo加速适配并改为8步，用于检查加速方案是否加重失真，耗时会增加。只有此前运动漂移已留证才可开始；每种方案同图只运行一次，对照不能作为已接受端点。")
+            Text("先检查静态编解码损失，再检查运动生成漂移。1536输入直接来自完整原图。原模型8步对照沿用原图、尺寸、种子和提示词，移除Turbo加速适配。历史结果保留；完全相同的输入方案不会重复运行，对照不能作为已接受端点。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             Text("首尾同图对照仅在8步仍有身份漂移并留证后开放：沿用同图、同Prompt、同种子和8步，只将同一原图也接入末帧。它是22帧约束试验，不是完整碰撞动作，也不是持续身份锁；中间帧仍须检查。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
@@ -54,6 +54,7 @@ struct H3FidelitySheet: View {
             }
             ScrollView {
                 VStack(alignment:.leading,spacing:16) {
+                    pairedInputs
                     if let input = job?.h3Binding?.appFirstTask?.proposal.input {
                         HStack(alignment:.top) {
                             image(input.originalPath,title:"原始完整图",revision:input.originalSHA256)
@@ -76,6 +77,7 @@ struct H3FidelitySheet: View {
                                 Picker("对照帧",selection:$sample) { Text("首帧 raw0").tag(0);Text("中间 raw10").tag(10);Text("末帧 raw21").tag(21) }.pickerStyle(.segmented)
                                 HStack(alignment:.top) {
                                     image(record.inputPath,title:"本次实际输入",revision:record.requestSHA256)
+                                    if let pair = record.pairedInput { image(record.directory + "/input-B.png",title:"实际末帧姿态 B",revision:pair.receipt.lastNormalized.sha256) }
                                     image(record.framePath(sample),title:record.kind.isMotion ? "本次原生 raw\(sample)" : "静态编解码 raw\(sample)",revision:record.reportSHA256 ?? "")
                                 }
                                 if let clip = record.clipPath { CandidateVideoPreview(path:clip,title:(job?.shortID ?? "") + " · " + record.kind.title).frame(height:220) }
@@ -102,6 +104,47 @@ struct H3FidelitySheet: View {
             }
             if let error { Text(error).foregroundStyle(.red).font(.system(size:11)) }
         }.padding(22).frame(width:920,height:720)
+    }
+    private var pairedInputs: some View {
+        VStack(alignment:.leading,spacing:10) {
+            Text("不同 A/B 关键姿态").font(.headline)
+            Text("需要：本任务完整起势 A、同脸同构图的不同收势 B，以及与两张图一致的短段动作Prompt。App完整归一后，由助手检查原图和归一图。B将实际接入末帧条件；22帧约0.92秒仅用于短段诊断，不代表完整动作或持续身份锁。")
+                .font(.system(size:11)).foregroundStyle(.secondary)
+            HStack {
+                Button("准备不同A/B姿态") { choosePairedInput(review:false) }
+                    .disabled(!store.canPrepareFidelityPair(jobID)).accessibilityIdentifier("fidelity.pair.prepare")
+                if let job,let pair = job.h3FidelityPairs?.last {
+                    Button("导入A/B助手图审") { choosePairedInput(review:true) }
+                        .disabled(!store.canPrepareFidelityPair(jobID) || H3FidelityPair.used(pair,in:job)).accessibilityIdentifier("fidelity.pair.review")
+                    Button("复制A/B动作Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(pair.receipt.plan.prompt,forType:.string) }
+                        .accessibilityIdentifier("fidelity.pair.copy-prompt")
+                    Button("查看A/B准备记录") { NSWorkspace.shared.open(URL(fileURLWithPath:pair.directory)) }
+                }
+            }
+            if let pair = job?.h3FidelityPairs?.last {
+                Text("已准备 \(job?.h3FidelityPairs?.count ?? 0) 组 · 助手图审：\(pair.reviews.last?.status ?? "待检查") · 1536×896 · 22帧 · 8步 · 沿用原任务引擎和种子")
+                    .font(.system(size:11)).accessibilityIdentifier("fidelity.pair.status")
+                Text(pair.receipt.plan.changedCondition).font(.system(size:11)).textSelection(.enabled)
+                HStack(alignment:.top) {
+                    image(pair.receipt.firstNormalized.path,title:"实际首帧 A · 完整归一",revision:pair.receipt.firstNormalized.sha256)
+                    image(pair.receipt.lastNormalized.path,title:"实际末帧 B · 完整归一",revision:pair.receipt.lastNormalized.sha256)
+                }
+            }
+        }.padding(12).background(Color.secondary.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius:10))
+    }
+    private func choosePairedInput(review: Bool) {
+        let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK,let url = panel.url {
+                Task {
+                    do {
+                        if review { try store.importFidelityPairReview(url,jobID:jobID) }
+                        else { try await store.importFidelityPair(url,jobID:jobID) }
+                        error = nil
+                    } catch { self.error = error.localizedDescription }
+                }
+            }
+        }
     }
     private func chooseTrialPolicy() {
         let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
