@@ -9,9 +9,9 @@ extension TaskStore {
               proposal.reviewReady else { return false }
         // A completed or failed experiment with this input is not silently run
         // again. A changed input has its own immutable task/revision history.
-        if job.h3FidelityChecks?.contains(where:{ $0.kind == kind && $0.originalSHA256 == input.originalSHA256 && $0.recipeVersion == 1 }) == true { return false }
+        if job.h3FidelityChecks?.contains(where:{ $0.kind == kind && $0.originalSHA256 == input.originalSHA256 && $0.recipeVersion == H3Fidelity.recipeVersion }) == true { return false }
         if kind == .motionDetail {
-            return job.h3FidelityChecks?.contains(where:{ $0.kind == .codecDetail && $0.status == "completed" && $0.originalSHA256 == input.originalSHA256 }) == true
+            return job.h3FidelityChecks?.contains(where:{ $0.kind == .codecDetail && $0.status == "completed" && $0.recipeVersion == H3Fidelity.recipeVersion && $0.originalSHA256 == input.originalSHA256 }) == true
         }
         return true
     }
@@ -86,19 +86,24 @@ extension TaskStore {
         if fidelityPreparing { fidelityJobID = nil }
         fidelityRunner?.cancel()
     }
-    func recordFidelityObservation(_ id: UUID,recordID: UUID,text: String) throws {
+    func recordFidelityObservation(_ id: UUID,recordID: UUID,text: String,finding: H3FidelityFinding) throws {
         guard let i = state.jobs.firstIndex(where:{ $0.id == id }),let j = state.jobs[i].h3FidelityChecks?.firstIndex(where:{ $0.id == recordID }),
               let record = state.jobs[i].h3FidelityChecks?[j],record.status == "completed",record.observation == nil,
-              (12...4000).contains(text.utf8.count),let reportHash = record.reportSHA256,
+              (12...4000).contains(text.utf8.count),H3FidelityFinding.choices(for:record.kind).contains(finding),let reportHash = record.reportSHA256,
               try WorkspaceDigest.sha256(H3Files.inside(record.reportPath,record.directory)) == reportHash else { throw StudioError.invalid("对照结论缺少本次有效报告或已记录，未覆盖。") }
         let receipts = try H3Fidelity.outputReceipts(directory:record.directory,kind:record.kind)
         _ = try H3Fidelity.validateReport(record,appJobID:id)
+        let guidance = H3FidelityGuidance.make(finding,shot:state.jobs[i].shot,kind:record.kind)
+        let guidanceObject = try JSONSerialization.jsonObject(with:JSONEncoder().encode(guidance))
         let payload: [String:Any] = ["schema":"jingsheng-App-fidelity-observation-v1","appJobID":id.uuidString,"diagnosticID":recordID.uuidString,
             "reportSHA256":reportHash,"originalSHA256":record.originalSHA256,"frames":receipts,"observation":text,
+            "finding":finding.rawValue,"guidance":guidanceObject,
             "source":"AppUI","actorKind":"unknown","videoAccepted":false,"continuationAuthorized":false,"recordedAt":ISO8601DateFormatter().string(from:Date())]
         let bytes = try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys])
         try bytes.write(to:URL(fileURLWithPath:record.directory + "/visual-observation.json"),options:.withoutOverwriting)
         state.jobs[i].h3FidelityChecks?[j].observation = text
+        state.jobs[i].h3FidelityChecks?[j].finding = finding
+        state.jobs[i].h3FidelityChecks?[j].guidance = guidance
         state.jobs[i].h3FidelityChecks?[j].observationSHA256 = H3ABConfigurationReader.digest(bytes);persist()
     }
 }

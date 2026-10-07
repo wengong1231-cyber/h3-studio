@@ -473,6 +473,13 @@ struct StudioView: View {
                 let origin = ResultRouteOrigin.current(job)
                 RedoTaskRouteCard(route:store.redoRoute(for:origin)) { target in openRedo(origin,target:target) }
             }
+            if let last = job.h3FidelityChecks?.last {
+                if let guidance = last.guidance { H3FidelityGuidanceCard(value:guidance) }
+                else if last.status == "failed" { H3FidelityGuidanceCard(value:.executionFailure) }
+                else if last.status == "completed" {
+                    H3FidelityGuidanceCard(value:H3FidelityGuidance.make(.needsMoreReview,shot:job.shot,kind:last.kind))
+                }
+            }
             if let binding = job.h3StaticBinding { H3StaticBindingSummary(binding:binding) }
             if let configuration = job.h3ABConfiguration {
                 if job.candidate != nil { H3ABReferences(configuration:configuration,preparation:job.h3InputPreparation,terminal:!job.status.isPending) }

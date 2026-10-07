@@ -7,7 +7,7 @@ enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var width: Int { self == .codecBaseline ? 768 : 1536 }
     var height: Int { self == .codecBaseline ? 448 : 896 }
-    var frames: Int { self == .motionDetail ? 22 : 1 }
+    var frames: Int { 22 }
     var title: String {
         switch self {
         case .codecBaseline: return "768 编解码对照"
@@ -23,7 +23,7 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var directory: String
     var requestSHA256: String
     var originalSHA256: String
-    var recipeVersion = 1
+    var recipeVersion = H3Fidelity.recipeVersion
     var status = "starting"
     var stage = "核对原始输入"
     var startedAt = Date()
@@ -33,6 +33,8 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var error: String?
     var observation: String?
     var observationSHA256: String?
+    var finding: H3FidelityFinding?
+    var guidance: H3FidelityGuidance?
     var progress: StageProgress?
     var isActive: Bool { ["starting","running","cancelling"].contains(status) }
     var inputPath: String { directory + "/input.png" }
@@ -43,6 +45,7 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
 
 struct H3FidelityRequest: Codable {
     var schema = "jingsheng-App-fidelity-diagnostic-v1"
+    var recipeVersion = H3Fidelity.recipeVersion
     var id: UUID
     var appJobID: UUID
     var workspace: String
@@ -57,7 +60,7 @@ struct H3FidelityRequest: Codable {
         owner.stillSameProcess && (try? JSONDecoder().decode(UUID.self,from:H3Files.read(URL(fileURLWithPath:workspace + "/owner.json"),limit:1024))) == sessionID
     }
     func validate(_ bytes: Data) throws -> H3FirstProposal {
-        guard schema == "jingsheng-App-fidelity-diagnostic-v1",binding.runtime == .real,
+        guard schema == "jingsheng-App-fidelity-diagnostic-v1",recipeVersion == H3Fidelity.recipeVersion,binding.runtime == .real,
               binding.appTaskID == appJobID,binding.appTaskWorkspace == workspace,
               try WorkspaceDigest.sha256(H3Files.safe(binding.jobPath)) == binding.jobSHA256 else {
             throw StudioError.invalid("保真对照未绑定本 App 的原始任务。")
@@ -66,7 +69,7 @@ struct H3FidelityRequest: Codable {
         let saved = try JSONDecoder().decode(WorkspaceState.self,from:H3Files.read(H3Files.safe(workspace + "/state.json"),limit:20_971_520))
         guard let parent = saved.jobs.first(where:{ $0.id == appJobID }),
               let record = parent.h3FidelityChecks?.first(where:{ $0.id == id }),record.isActive,
-              record.directory == directory,record.kind == kind,
+              record.directory == directory,record.kind == kind,record.recipeVersion == recipeVersion,
               record.requestSHA256 == H3ABConfigurationReader.digest(bytes),
               parent.status != .cancelled,parent.supersededBy == nil,
               let proposal = binding.appFirstTask?.proposal,proposal.input?.originalSHA256 == record.originalSHA256,
@@ -82,6 +85,12 @@ struct H3FidelityRequest: Codable {
 }
 
 enum H3Fidelity {
+    // The installed native VAE cannot decode a one-frame anchor. Its encoder
+    // processes 17-pixel-frame chunks and drops 3 latent frames: 34 identical
+    // input frames produce 7 latent frames, which decode to 22 pixel frames.
+    // This is a STATIC clip round trip, never a generated-motion result.
+    static let recipeVersion = 2
+    static let codecInputFrames = 34
     static func pipeline(kind: H3FidelityKind,proposal: H3FirstProposal,directory: String) throws -> Data {
         let template = try H3Files.readTemplateFallback()
         guard H3ABConfigurationReader.digest(template) == H3ABTaskBinding.templateSHA256 else { throw StudioError.invalid("保真管线模板指纹不同。") }
@@ -99,7 +108,17 @@ enum H3Fidelity {
             // implicit crop/resample stage a second time.
             if id == "normalize-A" || id == "save-detail-source" { continue }
             var config = stage["config"] as! [String:Any]
-            if id == "vae-encode-A" { stage["iports"] = [["src":"load-A","oport":0],["src":"model-select","oport":0]] }
+            if id == "load-A" && kind != .motionDetail {
+                config["url"] = Array(repeating:directory + "/input.png",count:codecInputFrames)
+            }
+            if id == "vae-encode-A" {
+                if kind != .motionDetail {
+                    result.append(["id":"stack-static-clip","type":"temporal-stack",
+                        "iports":[["src":"load-A","oport":0]],
+                        "config":["mode":"video","group_size":codecInputFrames,"overlap":0,"max_mb":192,"fps":24]])
+                }
+                stage["iports"] = [["src":kind == .motionDetail ? "load-A" : "stack-static-clip","oport":0],["src":"model-select","oport":0]]
+            }
             if id == "vae-decode" && kind != .motionDetail { stage["iports"] = [["src":"vae-encode-A","oport":0],["src":"model-select","oport":0]] }
             if id == "save-detail-frames" { config["path"] = directory + "/frames/frame-%04d.png" }
             if id == "save-video" { config["output_url"] = directory + "/trial.mp4" }
@@ -132,7 +151,8 @@ enum H3Fidelity {
         guard record.reportSHA256 == nil || record.reportSHA256 == H3ABConfigurationReader.digest(bytes),
               let report = try JSONSerialization.jsonObject(with:bytes) as? [String:Any],
               report["diagnosticID"] as? String == record.id.uuidString,report["appJobID"] as? String == appJobID.uuidString,
-              report["kind"] as? String == record.kind.rawValue,report["requestSHA256"] as? String == record.requestSHA256,
+              report["kind"] as? String == record.kind.rawValue,report["recipeVersion"] as? Int == record.recipeVersion,
+              report["requestSHA256"] as? String == record.requestSHA256,
               report["originalSHA256"] as? String == record.originalSHA256,report["videoAccepted"] as? Bool == false,
               report["continuationAuthorized"] as? Bool == false,report["status"] as? String == "technical_complete_visual_review_required",
               report["inputSHA256"] as? String == (try WorkspaceDigest.sha256(H3Files.inside(record.inputPath,record.directory))),
@@ -238,6 +258,7 @@ enum H3FidelityWorker {
                   try WorkspaceDigest.sha256(H3Files.safe(input.originalPath)) == input.originalSHA256 else { throw StudioError.invalid("保真输入或管线在运行时变化。") }
             var report: [String:Any] = ["schema":"jingsheng-App-fidelity-report-v1","diagnosticID":r.id.uuidString,"appJobID":r.appJobID.uuidString,
                 "kind":kind.rawValue,"status":"technical_complete_visual_review_required","originalSHA256":input.originalSHA256,"inputSHA256":inputHash,
+                "recipeVersion":r.recipeVersion,"codecStaticInputFrames":kind == .motionDetail ? 0 : H3Fidelity.codecInputFrames,
                 "sourceJobSHA256":r.binding.jobSHA256,"requestSHA256":H3ABConfigurationReader.digest(data),"pipelineSHA256":H3ABConfigurationReader.digest(graph),
                 "appExecutableSHA256":r.appExecutableSHA256,"helperSHA256":proposal.helperSHA256,"librarySHA256":proposal.librarySHA256,
                 "dimensions":[kind.width,kind.height],"frames":frames,"nativeExitCode":0,"promptSHA256":proposal.promptSHA256,"seed":proposal.seed,

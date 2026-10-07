@@ -7,6 +7,7 @@ struct H3FidelitySheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sample = 0
     @State private var observation = ""
+    @State private var findings: [UUID:H3FidelityFinding] = [:]
     @State private var error: String?
     private var job: ShotJob? { store.state.jobs.first { $0.id == jobID } }
     var body: some View {
@@ -15,7 +16,7 @@ struct H3FidelitySheet: View {
                 Text((job?.shortID ?? "") + " · 人脸保真对照").font(.title2)
                 Spacer();Button("关闭") { dismiss() }
             }
-            Text("先分离编解码损失与运动生成漂移。1536 输入直接由原图完整缩放，保留构图；高分辨率不是身份保证。短段为22帧，沿用原种子、提示词和4步，仅用于对照，不作为已接受端点。")
+            Text("先检查静态编解码损失，再检查运动生成漂移。编解码对照重复同一原图34次，按引擎要求编码后解出22帧，不生成动作。1536输入直接来自完整原图；运动短段沿用原种子、提示词和4步。高分辨率不是身份保证，对照不能作为已接受端点。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
             HStack {
                 ForEach(H3FidelityKind.allCases) { kind in
@@ -36,29 +37,36 @@ struct H3FidelitySheet: View {
                     ForEach(job?.h3FidelityChecks ?? []) { record in
                         VStack(alignment:.leading,spacing:8) {
                             HStack {
-                                Text(record.kind.title + " · " + record.status).font(.headline)
+                                Text(record.kind.title + " · 方案\(record.recipeVersion) · " + record.status).font(.headline)
                                 Spacer()
                                 Button("查看记录") { NSWorkspace.shared.open(URL(fileURLWithPath:record.directory)) }
                             }
                             Text(record.stage).font(.system(size:11)).textSelection(.enabled)
                             if let error = record.error { Text(error).font(.system(size:11)).foregroundStyle(.red).textSelection(.enabled) }
+                            if record.status == "failed" { H3FidelityGuidanceCard(value:.executionFailure) }
                             if record.isActive,let progress = record.progress { Text("\(progress.completed) / \(progress.total) \(progress.unit)").font(.system(size:11,design:.monospaced)) }
                             if record.status == "completed" {
-                                if record.kind == .motionDetail {
-                                    Picker("对照帧",selection:$sample) { Text("首帧 raw0").tag(0);Text("中间 raw10").tag(10);Text("末帧 raw21").tag(21) }.pickerStyle(.segmented)
-                                }
+                                Picker("对照帧",selection:$sample) { Text("首帧 raw0").tag(0);Text("中间 raw10").tag(10);Text("末帧 raw21").tag(21) }.pickerStyle(.segmented)
                                 HStack(alignment:.top) {
                                     image(record.inputPath,title:"本次实际输入",revision:record.requestSHA256)
-                                    image(record.framePath(record.kind == .motionDetail ? sample : 0),title:record.kind == .motionDetail ? "本次原生 raw\(sample)" : "仅编解码结果",revision:record.reportSHA256 ?? "")
+                                    image(record.framePath(sample),title:record.kind == .motionDetail ? "本次原生 raw\(sample)" : "静态编解码 raw\(sample)",revision:record.reportSHA256 ?? "")
                                 }
                                 if let clip = record.clipPath { CandidatePlayer(path:clip).frame(height:220) }
-                                if let note = record.observation { Text(note).font(.system(size:11)).textSelection(.enabled) }
+                                if let note = record.observation {
+                                    Text(note).font(.system(size:11)).textSelection(.enabled)
+                                    if let guidance = record.guidance { H3FidelityGuidanceCard(value:guidance) }
+                                }
                                 else {
+                                    Picker("实际检查结果",selection:Binding<H3FidelityFinding?>(get:{ findings[record.id] },set:{ findings[record.id] = $0 })) {
+                                        Text("请选择已看到的差异").tag(nil as H3FidelityFinding?)
+                                        ForEach(H3FidelityFinding.choices(for:record.kind)) { Text($0.title).tag(Optional($0)) }
+                                    }.accessibilityIdentifier("fidelity.finding." + record.kind.rawValue)
                                     TextEditor(text:$observation).frame(height:70).accessibilityIdentifier("fidelity.observation." + record.kind.rawValue)
                                     Button("记录对照结论") {
-                                        do { try store.recordFidelityObservation(jobID,recordID:record.id,text:observation);observation = "";error = nil }
+                                        guard let finding = findings[record.id] else { return }
+                                        do { try store.recordFidelityObservation(jobID,recordID:record.id,text:observation,finding:finding);observation = "";error = nil }
                                         catch { self.error = error.localizedDescription }
-                                    }.disabled(observation.utf8.count < 12).accessibilityIdentifier("fidelity.record." + record.kind.rawValue)
+                                    }.disabled(observation.utf8.count < 12 || findings[record.id] == nil).accessibilityIdentifier("fidelity.record." + record.kind.rawValue)
                                 }
                             }
                         }.padding(12).background(Color.secondary.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius:10))

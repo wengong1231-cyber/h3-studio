@@ -26,7 +26,11 @@ import ImageIO
                 try check("\(kind.rawValue)管线无悬空端口",allPorts.allSatisfy { let id = $0["src"] as! String;return id.isEmpty || ids.contains(id) },"every nonempty source belongs to graph")
                 try check("\(kind.rawValue)没有二次裁剪",!ids.contains("normalize-A") && !ids.contains("load-B"),"actual prepared image and no failed tail frame")
                 if kind != .motionDetail {
-                    try check("\(kind.rawValue)只运行编解码",ids == Set(["model-select","load-A","vae-encode-A","vae-decode","save-detail-frames"]),"no text, DiT or video save in codec comparison")
+                    try check("\(kind.rawValue)只运行静态片编解码",ids == Set(["model-select","load-A","stack-static-clip","vae-encode-A","vae-decode","save-detail-frames"]),"no text, DiT or video save in codec comparison")
+                    let urls = (stages.first { $0["id"] as? String == "load-A" }!["config"] as! [String:Any])["url"] as? [String]
+                    let stack = stages.first { $0["id"] as? String == "stack-static-clip" }!
+                    let stackConfig = stack["config"] as! [String:Any]
+                    try check("\(kind.rawValue)满足原生视频编解码块",urls?.count == 34 && Set(urls ?? []) == [root.path + "/input.png"] && stack["type"] as? String == "temporal-stack" && stackConfig["group_size"] as? Int == 34 && stackConfig["max_mb"] as? Int == 192,"34 identical pixel frames encode to 7 latent frames and decode to 22 frames; no single-anchor decode")
                 } else {
                     let config = stages.first { $0["id"] as? String == "generate-video" }!["config"] as! [String:Any]
                     try check("短段改变实际原生分辨率",config["width"] as? Int == 1536 && config["height"] as? Int == 896 && config["frames"] as? Int == 22,"native sample at bounded 22 frames")
@@ -39,15 +43,19 @@ import ImageIO
             let output = root.appendingPathComponent("output")
             try FileManager.default.createDirectory(at:output.appendingPathComponent("frames"),withIntermediateDirectories:true)
             try H3SourceFrames.save(baseline.image,to:output.appendingPathComponent("frames/frame-0000.png"))
+            try check("单图不能冒充完整静态编解码结果",rejected { _ = try H3Fidelity.outputReceipts(directory:output.path,kind:.codecBaseline) },"missing 21 native frames rejected")
+            for index in 1..<22 {
+                try FileManager.default.copyItem(at:output.appendingPathComponent("frames/frame-0000.png"),to:output.appendingPathComponent(String(format:"frames/frame-%04d.png",index)))
+            }
             let receipts = try H3Fidelity.outputReceipts(directory:output.path,kind:.codecBaseline)
-            try check("输出完整解码并绑定SHA",receipts.count == 1 && (receipts[0]["sha256"] as? String)?.count == 64,"actual PNG decoded")
+            try check("输出完整解码并绑定SHA",receipts.count == 22 && (receipts[0]["sha256"] as? String)?.count == 64,"all actual PNGs decoded")
             try check("低分辨率不能冒充高细节输出",rejected { _ = try H3Fidelity.outputReceipts(directory:output.path,kind:.codecDetail) },"wrong pixel dimensions rejected")
-            try check("单图不能冒充22帧短段",rejected { _ = try H3Fidelity.outputReceipts(directory:output.path,kind:.motionDetail) },"missing native frames rejected")
+            try check("静态低分辨率结果不能冒充高细节短段",rejected { _ = try H3Fidelity.outputReceipts(directory:output.path,kind:.motionDetail) },"wrong native dimensions rejected")
             let parentID = UUID()
             var reviewed = H3FidelityRecord(id:UUID(),kind:.codecBaseline,directory:output.path,requestSHA256:ExecutionFocusSelfTests.hashA,originalSHA256:ExecutionFocusSelfTests.hashB)
             let inputPath = output.appendingPathComponent("input.png")
             try FileManager.default.copyItem(at:output.appendingPathComponent("frames/frame-0000.png"),to:inputPath)
-            let report: [String:Any] = ["diagnosticID":reviewed.id.uuidString,"appJobID":parentID.uuidString,"kind":reviewed.kind.rawValue,"requestSHA256":reviewed.requestSHA256,
+            let report: [String:Any] = ["diagnosticID":reviewed.id.uuidString,"appJobID":parentID.uuidString,"kind":reviewed.kind.rawValue,"recipeVersion":reviewed.recipeVersion,"requestSHA256":reviewed.requestSHA256,
                 "originalSHA256":reviewed.originalSHA256,"inputSHA256":try WorkspaceDigest.sha256(inputPath),"videoAccepted":false,"continuationAuthorized":false,
                 "status":"technical_complete_visual_review_required","frames":receipts]
             let reportBytes = try JSONSerialization.data(withJSONObject:report,options:.sortedKeys)
@@ -73,7 +81,14 @@ import ImageIO
             testStore.finishFidelity(id:old.id,recordID:record.id,code:130)
             try check("取消释放App互斥且不放行视频",testStore.fidelityJobID == nil && testStore.state.jobs[0].h3FidelityChecks?[0].status == "cancelled" && testStore.state.jobs[0].h3VideoReview == nil,"no acceptance or continuation invented")
             try check("重复原输入实验不会自动重投",!testStore.canStartFidelity(old.id,kind:.codecBaseline),"terminal history remains")
-            try check("没有报告不能保存结论",rejected { try testStore.recordFidelityObservation(old.id,recordID:record.id,text:"fixture observation is not a video acceptance") },"task/report identity required")
+            try check("没有报告不能保存结论",rejected { try testStore.recordFidelityObservation(old.id,recordID:record.id,text:"fixture observation is not a video acceptance",finding:.needsMoreReview) },"task/report identity required")
+            try check("编解码不能声称运动身份已检查",!H3FidelityFinding.choices(for:.codecBaseline).contains(.motionIdentityDrift) && !H3FidelityFinding.choices(for:.motionDetail).contains(.codecDistortion),"classification follows actual experiment")
+            let badCodec = H3FidelityGuidance.make(.codecDistortion,shot:26,kind:.codecDetail)
+            try check("编码错误不推给用户改提示词",badCodec.blocksQuality && badCodec.prompt == nil && badCodec.requiredInputs.contains("无需补图"),"developer-owned cause and clear next step")
+            let drift = H3FidelityGuidance.make(.motionIdentityDrift,shot:26,kind:.motionDetail)
+            try check("身份漂移列出具体素材及补图Prompt",drift.blocksQuality && drift.requiredInputs.contains("各张脸") && drift.prompt?.contains("three-headed, six-armed") == true && drift.promptPurpose?.contains("重绘") == true,"reference prompt distinct from motion prompt")
+            let action = H3FidelityGuidance.make(.actionMismatch,shot:26,kind:.motionDetail)
+            try check("动作修订草稿明确接触与回弹",action.prompt?.contains("one clear, brief contact") == true && action.prompt?.contains("recoils slightly") == true && action.prompt != drift.prompt,"precise S26 action, no acceptance side effect")
             testStore.shutdown();store = nil
         } catch { checks.append(.init(name:"unexpected",passed:false,detail:error.localizedDescription)) }
         store?.shutdown()
