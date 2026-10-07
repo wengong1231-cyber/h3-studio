@@ -147,6 +147,13 @@ enum WorkspaceMigrationTests {
             try check("签名失败不复制或迁移", rejected { _ = try installer.install(legacyHint: installLegacy, signatureVerifier: { _ in throw StudioError.invalid("fixture signature rejection") }) } && !fm.fileExists(atPath: installMigrator.supportRoot.path), "生产入口实际使用 codesign；夹具注入失败验证顺序")
             let firstInstall = try installer.install(legacyHint: installLegacy, signatureVerifier: { _ in })
             try check("安装到固定用户 Applications", firstInstall.installedApp == installer.target.path && firstInstall.previousAppBackup == nil && (try hashes(installer.target)) == hashes(source) && (try hashes(installLegacy)) == installBaseline && !firstInstall.launched && !firstInstall.systemDatabaseModified, "夹具安装只复制指定应用、迁移自有数据，不启动或修改系统数据库")
+            let laterAssets = installLegacy.appendingPathComponent("static-inputs",isDirectory:true)
+            try fm.createDirectory(at:laterAssets,withIntermediateDirectories:true)
+            try Data("later source artwork fixture, not runtime state".utf8).write(to:laterAssets.appendingPathComponent("source.txt"))
+            let activeBeforeUpgrade = try hashes(installMigrator.standard)
+            let standardUpgradePlan = try installer.plan(legacyHint:installLegacy)
+            try check("标准工作区升级不重迁旧工程目录",standardUpgradePlan.activeWorkspace == "standard" && standardUpgradePlan.legacyMigration == nil &&
+                (try hashes(installMigrator.standard)) == activeBeforeUpgrade,"new project assets do not block installed-app upgrades; the active workspace remains authoritative and untouched")
             let targetFirst = try hashes(installer.target)
             try Data("upgraded fixture executable".utf8).write(to: source.appendingPathComponent("Contents/MacOS/WanshenjiH3Studio"))
             try check("替换失败保留原安装包", rejected { _ = try installer.install(legacyHint: installLegacy, signatureVerifier: { _ in }, failBeforePublish: true) } && (try hashes(installer.target)) == targetFirst, "发布前故障不改旧包，暂存副本自动清理")

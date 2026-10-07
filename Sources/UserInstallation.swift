@@ -89,7 +89,13 @@ struct UserAppInstaller {
         if exists { try validateApp(target) }
         let settings = try migrator.loadSettings()
         var migration: WorkspaceMigrationPlan?
-        if let legacyHint, fm.fileExists(atPath: legacyHint.appendingPathComponent("state.json").path) { migration = try migrator.plan(legacy: legacyHint) }
+        // Once standard storage is active, the old project folder is only
+        // historical evidence. New source assets there are not a new migration.
+        // resolve() still verifies the configured workspace and all leases.
+        if settings?.activeWorkspace != "standard",let legacyHint,
+           fm.fileExists(atPath: legacyHint.appendingPathComponent("state.json").path) {
+            migration = try migrator.plan(legacy: legacyHint)
+        }
         return InstallationPlan(sourceApp: sourceApp.path, targetApp: target.path, supportRoot: migrator.supportRoot.path,
             activeWorkspace: settings?.activeWorkspace, legacyMigration: migration, existingTarget: exists)
     }

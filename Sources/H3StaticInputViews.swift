@@ -58,7 +58,7 @@ struct H3StaticInputLibrarySheet: View {
                         }.padding(12).background(Color.secondary.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius:12))
                     }
                     if job?.shot == 5 {
-                        Label("河谷 → 闭目 → 睁眼；阶段边界须由明确分段指令同步，当前图库不替代时间规划。",systemImage:"list.number")
+                        Label("河谷、土石切点、闭目、睁眼续段分别登记；睁眼图只作参考，续段使用已接受的闭目末帧。",systemImage:"list.number")
                             .font(.system(size:11)).foregroundStyle(Color.studioGold)
                         Button("同步 S05 阶段窗口…",action:chooseStageAllocation).buttonStyle(.bordered)
                     }

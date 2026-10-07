@@ -64,7 +64,8 @@ struct H3StaticInputBinding: Codable, Equatable {
             guard try WorkspaceDigest.sha256(H3Files.safe(path)) == hash else { throw StudioError.invalid("S05 阶段窗口记录已变化。") }
             let allocation = try JSONDecoder().decode(H3StaticStageAllocation.self,from:H3Files.read(H3Files.safe(path),limit:262144))
             try allocation.validate()
-            guard allocation.assignments.contains(where:{ $0.plan == source.plan && $0.asset == primary }) else { throw StudioError.invalid("本段不属于明确登记的 S05 阶段窗口。") }
+            guard allocation.assignments.contains(where:{ $0.plan == source.plan && $0.asset == primary &&
+                ($0.motionReferences ?? []) == motionReferences && $0.effectivePrompt == record.prompt }) else { throw StudioError.invalid("本段图片、参考或提示词不属于明确登记的 S05 阶段窗口。") }
         }
     }
 }
@@ -72,14 +73,51 @@ struct H3StaticInputBinding: Codable, Equatable {
 struct H3StaticStageAssignment: Codable, Equatable {
     var plan: H3QueuePlan
     var asset: H3StaticAsset
+    var motionReferences: [H3StaticAsset]? = nil
+    var prompt: String? = nil
+    var effectivePrompt: String { prompt ?? asset.motionConstraints }
 }
 struct H3StaticStageAllocation: Codable, Equatable {
     var schema = "jingsheng-App-static-stage-allocation-v1"
     var sourceReference: String
     var assignments: [H3StaticStageAssignment]
+    /// V2 changes only independent static starts. Intentional source cuts and
+    /// accepted-endpoint continuations keep their original frozen plans.
+    var preservedPlans: [H3QueuePlan]? = nil
+    var allPlans: [H3QueuePlan] { assignments.map(\.plan) + (preservedPlans ?? []) }
     func validate() throws {
-        guard schema == "jingsheng-App-static-stage-allocation-v1",(8...2000).contains(sourceReference.utf8.count) else { throw StudioError.invalid("阶段窗口需要明确的外部分段来源。") }
-        try H3StaticStagePlan.validateS05(assignments.map { ($0.plan,$0.asset) })
+        guard (8...2000).contains(sourceReference.utf8.count) else { throw StudioError.invalid("阶段窗口需要明确的外部分段来源。") }
+        for assignment in assignments {
+            let references = assignment.motionReferences ?? []
+            guard (12...32768).contains(assignment.effectivePrompt.utf8.count),references.count <= 4,
+                  references.allSatisfy({ $0.shot == assignment.plan.shot }),
+                  Set(([assignment.asset] + references).map(\.id)).count == references.count+1 else {
+                throw StudioError.invalid("阶段提示词或参考图身份无效。")
+            }
+        }
+        if schema == "jingsheng-App-static-stage-allocation-v1" {
+            guard preservedPlans == nil else { throw StudioError.invalid("旧阶段格式不能声明保留来源。") }
+            try H3StaticStagePlan.validateS05(assignments.map { ($0.plan,$0.asset) })
+            return
+        }
+        guard schema == "jingsheng-App-static-stage-allocation-v2" else { throw StudioError.invalid("不支持的阶段窗口格式。") }
+        let ordered = allPlans.sorted { $0.part < $1.part }
+        let windows = [1564,1629,1700,1770,1840]
+        guard ordered.count == 4,Set(ordered.map(\.requestID)).count == 4,
+              ordered.enumerated().allSatisfy({ i,p in p.shot == 5 && p.part == i+1 && p.partCount == 4 &&
+                  p.destinationStart == windows[i] && p.destinationEnd == windows[i+1] }),
+              Set(assignments.map { $0.plan.part }) == Set([1,3]),assignments.count == 2,
+              Set((preservedPlans ?? []).map(\.part)) == Set([2,4]),preservedPlans?.count == 2,
+              ordered.prefix(3).allSatisfy({ $0.dependencyRequestID == nil && $0.sourceGlobalFrameIndex == $0.destinationStart && $0.sourceMediaPath != nil && $0.sourceMediaSHA256 != nil }),
+              ordered[3].dependencyRequestID == ordered[2].requestID,
+              ordered[3].dependencyRawIndex == ordered[2].selectedRawEnd-1,
+              ordered[3].sourceMediaPath == nil,ordered[3].sourceGlobalFrameIndex == nil,
+              let river = assignments.first(where:{ $0.plan.part == 1 }),river.asset.shot == 5,river.asset.stage == "river-valley",
+              let closed = assignments.first(where:{ $0.plan.part == 3 }),closed.asset.shot == 5,closed.asset.stage == "closed-eyes",
+              (river.motionReferences ?? []).isEmpty,
+              closed.motionReferences?.count == 1,closed.motionReferences?.first?.stage == "open-eyes-original-reference" else {
+            throw StudioError.invalid("S05 必须保留四段窗口：河谷首图、原片土石切点、闭目首图、经接受的闭目末帧接睁眼；睁眼图仅作参考。")
+        }
     }
 }
 

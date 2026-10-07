@@ -1,6 +1,8 @@
 # 镜生 H3
 
-原生 macOS 本地视频生成工作台，使用 SwiftUI 与 AppKit。固定名称为「镜生 H3」，Bundle ID 为 `com.wengong.WanshenjiH3Studio`，正式入口为 `~/Applications/镜生 H3.app`。当前源码版本为 **0.4.14（20）**。
+原生 macOS 本地视频生成工作台，使用 SwiftUI 与 AppKit。固定名称为「镜生 H3」，Bundle ID 为 `com.wengong.WanshenjiH3Studio`，正式入口为 `~/Applications/镜生 H3.app`。当前源码版本为 **0.4.15（21）**。
+
+S05 阶段导入 v2 分别绑定河谷和闭目首图，保留原片土石切点及第四段的已验收末帧依赖；睁眼图只作为动作参考。相同阶段导入保持绑定身份，输入修订不会恢复已取消任务或解除队列暂停。
 
 ## 工作流
 

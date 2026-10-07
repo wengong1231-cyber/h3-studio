@@ -37,8 +37,14 @@ extension TaskStore {
               primary.shot == plan.shot,references.count <= 4,references.allSatisfy({ $0.shot == plan.shot }),
               Set(([primary]+references).map(\.id)).count == references.count+1,(12...32768).contains(prompt.utf8.count),
               (8...2000).contains(sourceReference.utf8.count) else { throw StudioError.invalid("静态输入只能绑定未领取任务；已执行的镜头需先整镜重做。") }
+        if plan.shot == 5 && plan.dependencyRequestID != nil {
+            throw StudioError.invalid("S05 睁眼续段必须采用前段已接受的闭目端帧；睁眼静态图只能绑定为参考。")
+        }
+        if let phaseAllocation { try phaseAllocation.validate() }
+        let allocationEncoder = JSONEncoder();allocationEncoder.outputFormatting = [.prettyPrinted,.sortedKeys]
+        let allocationHash = try phaseAllocation.map { H3ABConfigurationReader.digest(try allocationEncoder.encode($0)) }
         if let current = original.h3StaticBinding,current.primary == primary,current.motionReferences == references,
-           current.promptSHA256 == H3ABConfigurationReader.digest(Data(prompt.utf8)) {
+           current.promptSHA256 == H3ABConfigurationReader.digest(Data(prompt.utf8)),current.phaseAllocationSHA256 == allocationHash {
             if prepare { await startPlannedJob(id) };return current
         }
         abConfigurationBusy = true;configurationReadOperation = "记录 \(original.shortID) 完整静态图修订与旧输入历史"
@@ -58,7 +64,8 @@ extension TaskStore {
                 var allocationPath: String?,allocationHash: String?
                 if let phaseAllocation {
                     try phaseAllocation.validate()
-                    guard phaseAllocation.assignments.contains(where:{ $0.plan == plan && $0.asset == primary }) else { throw StudioError.invalid("静态图与已声明阶段分段不同。") }
+                    guard phaseAllocation.assignments.contains(where:{ $0.plan == plan && $0.asset == primary &&
+                        ($0.motionReferences ?? []) == references && $0.effectivePrompt == prompt }) else { throw StudioError.invalid("静态图、参考与提示词不属于已声明阶段分段。") }
                     let bytes = try encoder.encode(phaseAllocation),hash = H3ABConfigurationReader.digest(bytes)
                     let path = workspace.appendingPathComponent("h3-static-stage-plans/" + hash + ".json")
                     try FileManager.default.createDirectory(at:path.deletingLastPathComponent(),withIntermediateDirectories:true)
@@ -83,11 +90,13 @@ extension TaskStore {
             }
             let before = state
             for j in state.jobs.indices where state.jobs[j].supersededBy == nil && state.jobs[j].h3QueuePlan?.shot == plan.shot && (state.jobs[j].h3QueuePlan?.part ?? 0) >= plan.part {
+                let remainedCancelled = state.jobs[j].status == .cancelled
                 state.jobs[j].h3FirstProposal = nil;state.jobs[j].h3AutomaticWorkflow = nil;state.jobs[j].h3VideoReview = nil
                 state.jobs[j].executionActivity = nil;state.jobs[j].progress = nil;state.jobs[j].startedAt = nil;state.jobs[j].endedAt = nil
-                state.jobs[j].status = .blocked;state.jobs[j].error = nil
+                state.jobs[j].status = remainedCancelled ? .cancelled : .blocked;state.jobs[j].error = nil
                 state.jobs[j].h3InputPreparation = .init(materialsStartedAt:Date(),materialsEndedAt:Date())
                 state.jobs[j].stage = j == i ? "完整静态图已绑定 · 待 CPU 归一化与助手检查" : "前段输入已修订 · 旧端帧与旧 QA 不再放行"
+                if remainedCancelled { state.jobs[j].stage = "已取消 · 输入修订已记录，未恢复任务";state.jobs[j].endedAt = before.jobs[j].endedAt }
                 state.jobs[j].logTail.append("输入修订 \(binding.id.uuidString)：原状态、提案与依赖记录保存在 \(binding.directory)。旧图片、QA、清单与候选不覆盖。")
             }
             state.jobs[i].h3StaticBinding = binding;state.jobs[i].reference = primary.path;state.jobs[i].prompt = prompt
@@ -103,19 +112,39 @@ extension TaskStore {
     func bindStaticStageAllocation(_ allocation: H3StaticStageAllocation) async throws {
         try allocation.validate()
         guard singleGeneratorIdle else { throw StudioError.invalid("现有任务正在运行，阶段映射未改变。") }
-        for assignment in allocation.assignments.sorted(by:{ $0.plan.part < $1.plan.part }) {
-            guard let job = currentPlannedJob(assignment.plan.requestID),job.h3QueuePlan == assignment.plan,
+        for plan in allocation.allPlans {
+            guard let job = currentPlannedJob(plan.requestID),job.h3QueuePlan == plan,
                   canBindStaticInput(job.id) else { throw StudioError.invalid("阶段映射必须对应当前全部未领取任务。") }
         }
+        guard allocation.assignments.allSatisfy({ $0.plan.dependencyRequestID == nil }),
+              (allocation.preservedPlans ?? []).allSatisfy({ currentPlannedJob($0.requestID)?.h3StaticBinding == nil }) else {
+            throw StudioError.invalid("阶段映射不能用静态终态替换续段首帧，也不能覆盖要保留的原来源。")
+        }
+        // Verify every static asset before any production state changes.
+        try await Task.detached(priority:.utility) {
+            for assignment in allocation.assignments {
+                _ = try assignment.asset.readVerified()
+                for reference in assignment.motionReferences ?? [] { _ = try reference.readVerified() }
+            }
+        }.value
         let before = state
         do {
         for assignment in allocation.assignments.sorted(by:{ $0.plan.part < $1.plan.part }) {
             let job = currentPlannedJob(assignment.plan.requestID)!
-            _ = try await bindStaticInput(job.id,primary:assignment.asset,prompt:assignment.asset.motionConstraints,
+            _ = try await bindStaticInput(job.id,primary:assignment.asset,references:assignment.motionReferences ?? [],prompt:assignment.effectivePrompt,
                 sourceReference:allocation.sourceReference,phaseAllocation:allocation,prepare:false)
         }
+        if let first = allocation.assignments.first,let binding = currentPlannedJob(first.plan.requestID)?.h3StaticBinding {
+            for plan in allocation.preservedPlans ?? [] {
+                if let i = state.jobs.firstIndex(where:{ $0.supersededBy == nil && $0.h3QueuePlan == plan }) {
+                    let entry = "S05 阶段映射保留本段原输入来源与依赖：" + (binding.phaseAllocationPath ?? "")
+                    if !state.jobs[i].logTail.contains(entry) { state.jobs[i].logTail.append(entry) }
+                }
+            }
+            persist();guard storageFault == nil else { throw StudioError.invalid(storageFault!) }
+        }
         } catch { state = before;persist();throw error }
-        notice = "S05 三阶段完整映射已登记；保留既定顺序与276帧窗口，未启动生成。"
+        notice = "S05 阶段映射已登记；保留276帧窗口、原片切点和续段端点依赖，未启动生成。"
     }
     func canRedoEntireShot(_ id: UUID) -> Bool {
         guard singleGeneratorIdle,let job = state.jobs.first(where:{ $0.id == id }),let plan = job.h3QueuePlan,

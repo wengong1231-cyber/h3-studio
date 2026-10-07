@@ -86,6 +86,43 @@ import Foundation
             var reversed = valid;reversed.assignments[0].asset = stageAssets[2]
             var rejected = false;do { try reversed.validate() } catch { rejected = true }
             try check("S05阶段倒序拒绝",rejected,"river -> closed -> open must cover the existing 276-frame window; test allocation is never imported")
+            let mixed = H3StaticStageAllocation(schema:"jingsheng-App-static-stage-allocation-v2",
+                sourceReference:"CPU protocol fixture: preserve four registered S05 source and endpoint windows",
+                assignments:[.init(plan:s05[0].h3QueuePlan!,asset:stageAssets[0]),
+                    .init(plan:s05[2].h3QueuePlan!,asset:stageAssets[1],motionReferences:[stageAssets[2]],prompt:"Keep the same two eyelids fully closed for the entire selected segment; no early opening.")],
+                preservedPlans:[s05[1].h3QueuePlan!,s05[3].h3QueuePlan!])
+            try mixed.validate()
+            var earlyOpen = mixed;earlyOpen.assignments[1].asset = stageAssets[2]
+            rejected = false;do { try earlyOpen.validate() } catch { rejected = true }
+            try check("S05睁眼终态不能替代闭目首图",rejected,"open image is a reference only; part 4 retains its accepted-endpoint source")
+            var wrongDependency = mixed;wrongDependency.preservedPlans![1].dependencyRawIndex! += 1
+            rejected = false;do { try wrongDependency.validate() } catch { rejected = true }
+            try check("S05阶段映射不能漂移端点",rejected,"part 4 must depend on the exact selected end frame of part 3")
+            var missingCut = mixed;missingCut.preservedPlans!.removeFirst()
+            rejected = false;do { try missingCut.validate() } catch { rejected = true }
+            try check("S05阶段映射不能漏掉土石切点",rejected,"all four existing destination windows must be present exactly once")
+            rejected = false
+            do { _ = try await value.bindStaticInput(s05[3].id,primary:stageAssets[2],prompt:stageAssets[2].motionConstraints,sourceReference:"CPU fixture incorrect endpoint replacement",prepare:false) }
+            catch { rejected = true }
+            try check("单张绑定入口也阻止S05终态覆盖续段",rejected && value.currentPlannedJob(s05[3].h3QueuePlan!.requestID)?.h3StaticBinding == nil,"guard applies outside the stage importer as well")
+            try await value.bindStaticStageAllocation(mixed)
+            let mixedJobs = s05.map { value.currentPlannedJob($0.h3QueuePlan!.requestID)! }
+            try check("S05静态与原来源共同登记",mixedJobs[0].h3StaticBinding?.primary == stageAssets[0] &&
+                mixedJobs[2].h3StaticBinding?.primary == stageAssets[1] && mixedJobs[2].h3StaticBinding?.motionReferences == [stageAssets[2]] &&
+                mixedJobs[1].h3StaticBinding == nil && mixedJobs[3].h3StaticBinding == nil &&
+                zip(mixedJobs,s05).allSatisfy({ $0.h3QueuePlan == $1.h3QueuePlan }),"both static starts are bound; source frame 1629 and predecessor raw69 remain unchanged")
+            let mixedIDs = mixedJobs.compactMap { $0.h3StaticBinding?.id }
+            try await value.bindStaticStageAllocation(mixed)
+            try check("S05阶段重复导入不重绑",s05.compactMap { value.currentPlannedJob($0.h3QueuePlan!.requestID)?.h3StaticBinding?.id } == mixedIDs,"same allocation preserves immutable binding identities and histories")
+            let s24 = value.currentPlannedJob("planned-S24-p01-20261006")!,s24Next = value.currentPlannedJob("planned-S24-p02-20261006")!
+            let cancelledAt = Date(),cancelledIndex = value.state.jobs.firstIndex(where:{ $0.id == s24Next.id })!
+            value.state.jobs[cancelledIndex].status = .cancelled;value.state.jobs[cancelledIndex].endedAt = cancelledAt
+            value.state.automaticLaunchesPaused = true
+            let s24Asset = value.staticAssets.first(where:{ $0.shot == 24 })!
+            _ = try await value.bindStaticInput(s24.id,primary:s24Asset,prompt:s24Asset.motionConstraints,sourceReference:"CPU fixture bind without resuming cancelled dependent",prepare:false)
+            let cancelled = value.currentPlannedJob("planned-S24-p02-20261006")!
+            try check("绑定输入不恢复明确取消或暂停",cancelled.status == .cancelled && cancelled.endedAt == cancelledAt && value.state.automaticLaunchesPaused == true,"new inputs invalidate stale QA while retaining cancellation and the global pause flag")
+            value.state.automaticLaunchesPaused = false
             let s10Path = H3StaticCatalogReader.knownPath.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("S10-identity-action-repair-20261007-95_4sg3c/S10-Appdev-static-reference-HANDOFF.local.json")
             _ = try await value.importStaticCatalog(s10Path)
             try check("S10三张参考指纹与限制保留",value.staticAssets.filter({ $0.shot == 10 }).count == 3 && value.staticAssets.filter({ $0.shot == 10 }).allSatisfy({ $0.motionConstraints.contains("not certified continuous") }),"reference candidates, no user face/video acceptance or interpolation endpoint certification")
