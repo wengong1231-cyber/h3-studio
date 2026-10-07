@@ -25,7 +25,7 @@ struct ActivityStatusCard: View {
             if let task { Text(task).font(.system(size:13,weight:.medium)).lineLimit(2) }
             Text(value.stage).font(.system(size:11,weight:.medium)).fixedSize(horizontal:false,vertical:true)
             HStack(alignment:.top,spacing:10) {
-                Label("已用 " + value.elapsed,systemImage:"clock")
+                Label(value.elapsedDescription,systemImage:"clock")
                 if let phase = value.stageElapsed { Text(phase) }
             }.font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary).monospacedDigit()
             if let progress = value.progress {

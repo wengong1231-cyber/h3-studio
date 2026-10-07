@@ -173,7 +173,7 @@ extension TaskStore {
                 guard updated.reviewReady else { throw StudioError.invalid("画面检查未同时绑定实际原帧、归一图、提示词和提案指纹，未接续。") }
                 if state.jobs[index].h3FirstProposal != updated || state.jobs[index].error != nil {
                     state.jobs[index].h3FirstProposal = updated;state.jobs[index].error = nil
-                    state.jobs[index].stage = state.automaticLaunchesPaused == true ? "画面检查通过 · 队列已暂停，输入与回执保留" : "画面检查通过 · 自动冻结与启动"
+                    state.jobs[index].stage = "画面检查通过 · 输入与回执保留"
                     state.jobs[index].executionActivity?.milestone(state.jobs[index].stage,at:Date(),phase:.preparing)
                     state.jobs[index].logTail.append("实际原帧、归一图与提示词检查通过，绑定当前任务及全部输入指纹。观察：" + result.observation)
                     persist()

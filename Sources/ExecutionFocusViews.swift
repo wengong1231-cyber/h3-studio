@@ -84,7 +84,7 @@ struct ExecutionFocusCards: View {
                 HStack(alignment:.firstTextBaseline,spacing:8) {
                     Text(current.job.focusTaskLabel).font(.system(size:16,weight:.semibold)).lineLimit(1)
                     Spacer(minLength:2)
-                    Text(current.activity.elapsed).font(.system(size:12,weight:.medium,design:.monospaced)).foregroundStyle(.secondary)
+                    Text(current.activity.elapsedDescription).font(.system(size:12,weight:.medium,design:.monospaced)).foregroundStyle(.secondary)
                 }
                 Text(current.activity.stage).font(.system(size:11,weight:.medium)).lineLimit(1).help(current.activity.stage)
                 HStack(spacing:6) {

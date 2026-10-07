@@ -794,7 +794,7 @@ struct ShotRow: View {
                 Text(job.elapsedLabel).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
             }
         }.buttonStyle(.plain)
-            .accessibilityLabel("\(job.shortID)，\(title)，当前第\(versionCount)版，\(job.engine.label)，\(job.displayStatusLabel)，\(job.progress?.label ?? job.stage)")
+            .accessibilityLabel("\(job.shortID)，\(title)，当前第\(versionCount)版，\(job.engine.label)，\(job.displayStatusLabel)，\(job.progress?.label ?? job.displayStage)")
             .accessibilityIdentifier("task-row.current.\(job.id.uuidString)")
     }
 }
@@ -1025,9 +1025,9 @@ struct OrbView: View {
                     Text(activity.progress?.label ?? activity.stage).font(.system(size:8)).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
                     Text(focus.orbNext).font(.system(size:8)).foregroundStyle(Color.studioTeal.opacity(0.9)).lineLimit(1).help(focus.orbNext)
                     if telemetry.enabled {
-                        Text("整机 GPU " + (telemetry.latest?.gpu?.utilizationPercent.map { String(format:"%.0f%%",$0) } ?? "—") + " · " + activity.elapsed)
+                        Text("整机 GPU " + (telemetry.latest?.gpu?.utilizationPercent.map { String(format:"%.0f%%",$0) } ?? "—") + " · " + activity.elapsedDescription)
                             .font(.system(size:8,design:.monospaced)).foregroundStyle(Color.studioTeal).lineLimit(1)
-                    } else { Text("已用 " + activity.elapsed).font(.system(size:8)).foregroundStyle(.white.opacity(0.55)).lineLimit(1) }
+                    } else { Text(activity.elapsedDescription).font(.system(size:8)).foregroundStyle(.white.opacity(0.55)).lineLimit(1) }
                 }.padding(7).background(Color(red:0.08,green:0.1,blue:0.13).opacity(0.96))
                     .clipShape(RoundedRectangle(cornerRadius:12)).transition(.opacity).frame(width:162)
             } else { Spacer().frame(width:162) }
@@ -1049,7 +1049,7 @@ struct OrbView: View {
             }.frame(width:70,height:70).shadow(color:.black.opacity(0.2),radius:10,y:5)
                 .help("镜生 H3 · " + focus.orbCurrent + " · " + focus.orbNext + " · " + activity.state + " · " + activity.stage + " · " + activity.lastProgress + (activity.heartbeat.map { " · " + $0 } ?? "") + " · 点击展开，拖动移动")
                 .accessibilityElement(children:.ignore)
-                .accessibilityLabel("镜生 H3 悬浮球，" + focus.orbCurrent + "，" + focus.orbNext + "，" + activity.state + "，" + activity.stage + "，已用" + activity.elapsed + "，" + activity.lastProgress)
+                .accessibilityLabel("镜生 H3 悬浮球，" + focus.orbCurrent + "，" + focus.orbNext + "，" + activity.state + "，" + activity.stage + "，" + activity.elapsedDescription + "，" + activity.lastProgress)
                 .accessibilityAddTraits(.isButton).accessibilityAction { activate() }
         }.padding(12).foregroundStyle(.white).frame(width:268,height:94)
     }

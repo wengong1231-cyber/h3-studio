@@ -140,11 +140,21 @@ import AVFoundation
             let standard = WorkspaceMigrator.defaultSupportRoot.appendingPathComponent("Workspace/state.json")
             if FileManager.default.fileExists(atPath:standard.path) {
                 let before = try Data(contentsOf:standard),state = try JSONDecoder().decode(WorkspaceState.self,from:before)
-                let copyRoot = root.appendingPathComponent("history-records");try FileManager.default.createDirectory(at:copyRoot,withIntermediateDirectories:true);try before.write(to:copyRoot.appendingPathComponent("state.json"))
-                let copy = try TaskStore(root:copyRoot,executable:executable,monitoring:false)
                 let encoder = JSONEncoder();encoder.outputFormatting = [.sortedKeys]
+                let roundTrip = try JSONDecoder().decode(WorkspaceState.self,from:encoder.encode(state))
+                try check("实时记录只读编解码保留全部身份",(try encoder.encode(state.jobs)) == (try encoder.encode(roundTrip.jobs)),"包括活动实验的只读快照，不把生产进程身份交给测试工作区恢复")
+                // Opening a live record in a second TaskStore intentionally
+                // invokes restart recovery. Test stopped history here; active
+                // lifecycle recovery has its own isolated CPU fixtures.
+                let stopped = state.jobs.filter { !$0.status.isActive && $0.externalHistory?.observing != true
+                    && $0.h3AutomaticWorkflow?.status != "running" && $0.h3InputPreparation?.status != "running"
+                    && $0.h3FidelityChecks?.contains(where:{ $0.isActive }) != true }
+                var snapshot = state;snapshot.jobs = stopped
+                let copyRoot = root.appendingPathComponent("history-records");try FileManager.default.createDirectory(at:copyRoot,withIntermediateDirectories:true)
+                try encoder.encode(snapshot).write(to:copyRoot.appendingPathComponent("state.json"))
+                let copy = try TaskStore(root:copyRoot,executable:executable,monitoring:false)
                 for _ in 0..<100 { copy.heartbeatTick(isAlive:{ _ in false }) }
-                try check("现有真实历史在隔离副本保持不变",state.jobs.count == copy.state.jobs.count && (try encoder.encode(state.jobs)) == (try encoder.encode(copy.state.jobs)) && copy.launchCount == 0 && (try Data(contentsOf:standard)) == before,"仅复制读取正式状态到夹具；核对全部现有 UUID/状态/步骤/候选/尝试，不固定历史条数，不启动任何镜头")
+                try check("已停止真实历史在隔离副本保持不变",stopped.count == copy.state.jobs.count && (try encoder.encode(stopped)) == (try encoder.encode(copy.state.jobs)) && copy.launchCount == 0,"仅打开已停止任务副本，核对 UUID/状态/步骤/候选/尝试；活动任务由正式App继续推进，不要求实时状态文件静止")
                 copy.shutdown()
             }
             try await StudioSelfTests.wait("preview diagnostics flushed",timeout:2) {

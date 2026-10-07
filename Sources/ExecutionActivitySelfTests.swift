@@ -44,6 +44,23 @@ enum ExecutionActivitySelfTests {
         job.status = .blocked;job.h3AutomaticWorkflow = .init(status:"waiting",phase:"pixel_qa",startedAt:start,automaticContinuationAuthorized:true)
         let qa = ActivityPresenter.job(job,now:start.addingTimeInterval(20))
         check("助手图审与GPU执行区分",qa.shortState == "待检查" && qa.tone == .waiting && qa.detail.contains("没有运行视频生成"),"no operator approval step or fake spinner")
+        check("图审等待明确标作流程用时",qa.elapsedTitle == "流程用时" && qa.elapsed == "20秒","preparation and waiting must not be called generation")
+        var timed = job;timed.engine = .h3;timed.status = .running;timed.endedAt = nil;timed.startedAt = start
+        timed.h3GenerationStartedAt = start.addingTimeInterval(3600)
+        let generating = ActivityPresenter.job(timed,now:start.addingTimeInterval(3660))
+        check("生成计时排除一小时图审等待",generating.elapsedTitle == "生成用时" && generating.elapsed == "1分0秒","uses the native-start event rather than workflow start")
+        timed.h3GenerationEndedAt = start.addingTimeInterval(3700);timed.stage = "技术检查";timed.h3ValidationStartedAt = timed.h3GenerationEndedAt
+        let validating = ActivityPresenter.job(timed,now:start.addingTimeInterval(4000))
+        check("后处理检查不延长生成计时",validating.elapsed == "1分40秒","native-generation end freezes this clock before validation")
+        timed.status = .completed;timed.endedAt = start.addingTimeInterval(4010)
+        let completed = ActivityPresenter.job(timed,now:start.addingTimeInterval(9000))
+        check("已完成生成时间不受验收等待影响",completed.elapsed == validating.elapsed && completed.elapsedTitle == "生成用时","finished candidate may wait for user without counting as GPU work")
+        timed.status = .failed;timed.h3GenerationEndedAt = nil;timed.endedAt = start.addingTimeInterval(3690)
+        check("失败生成以实际终止时点截止",ActivityPresenter.job(timed,now:start.addingTimeInterval(9000)).elapsed == "1分30秒","missing native end falls back to terminal time, not current wall time")
+        timed.h3GenerationStartedAt = nil
+        check("旧记录缺原生时点不虚构生成耗时",ActivityPresenter.job(timed,now:start.addingTimeInterval(9000)).elapsedTitle == "流程用时","legacy workflow remains explicitly labelled")
+        timed.h3AutomaticWorkflow = nil
+        check("无工作流旧任务标注执行耗时",ActivityPresenter.job(timed,now:start.addingTimeInterval(9000)).elapsedTitle == "执行用时","attempt or job execution is not asserted to be native GPU time")
         job.h3AutomaticWorkflow = nil;job.status = .interrupted;job.error = "crash fixture"
         let interrupted = ActivityPresenter.job(job,now:start.addingTimeInterval(20))
         check("中断不是运行",interrupted.shortState == "中断" && interrupted.tone == .attention && interrupted.progress == nil,"no native replay implied")

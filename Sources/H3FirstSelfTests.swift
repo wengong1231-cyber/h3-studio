@@ -167,6 +167,16 @@ import ImageIO
             try await store.importInputReview(store.firstReviewURL(id),id:id)
             let reviewHistory = store.firstReviewURL(id).deletingLastPathComponent().appendingPathComponent("input-review-history")
             try check("App图审归档且尊重暂停",store.state.jobs[0].h3FirstProposal?.reviewReady == true && store.launchCount == 0 && (try FileManager.default.contentsOfDirectory(atPath:reviewHistory.path)).count == 1 && store.state.jobs[0].logTail.contains { $0.hasPrefix("App 导入输入图审：") },"实际输入已核对，图审来源归档，显式暂停仍有效")
+            var reviewed = store.state.jobs[0]
+            reviewed.stage = "画面检查通过 · 队列已暂停，输入与回执保留"
+            let pausedDisplay = ActivityPresenter.job(reviewed,now:Date(),automaticLaunchesPaused:true)
+            let resumedDisplay = ActivityPresenter.job(reviewed,now:Date(),automaticLaunchesPaused:false)
+            try check("图审通过后不再冒充待图审",reviewed.displayStatusLabel == "待启动" && resumedDisplay.shortState == "待启动","input QA and native launch are separate phases")
+            try check("暂停标注来自当前队列状态",pausedDisplay.shortState == "已暂停" && pausedDisplay.state.contains("已暂停") && !resumedDisplay.state.contains("暂停") && !resumedDisplay.stage.contains("暂停"),"same legacy job changes presentation on resume without rewriting audit")
+            try check("旧暂停审计保留而显示中立",reviewed.stage.contains("队列已暂停") && !reviewed.displayStage.contains("暂停") && reviewed.displayStage.contains("回执保留"),"no migration or production state mutation")
+            try check("真实暂停传入工作台与详情",store.activity(for:store.state.jobs[0]).shortState == "已暂停" && store.workbenchActivity().shortState == "已暂停","both surfaces use the persisted H3 pause rather than the CPU queue flag")
+            reviewed.h3AutomaticWorkflow?.automaticContinuationAuthorized = false
+            try check("未授权检查不伪称可启动",!reviewed.reviewedInputAwaitingLaunch && ActivityPresenter.job(reviewed,now:Date()).shortState != "待启动","presentation cannot manufacture generation permission")
             await store.resumeAuthorizedFirstQueue()
             try check("检查通过自动接续一次",store.launchCount == 1 && store.activeJob?.id == id && store.state.jobs[0].h3Binding?.appFirstTask != nil,"fixture QA response automatically froze input and entered App-owned CPU worker")
             await store.checkFirstPixelReviews();await store.startAuthorizedFirst(id)

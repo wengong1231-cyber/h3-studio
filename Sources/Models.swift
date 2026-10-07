@@ -4,8 +4,8 @@ enum AppIdentity {
     static let name = "镜生 H3"
     static let bundleID = "com.wengong.WanshenjiH3Studio"
     static let executable = "WanshenjiH3Studio"
-    static let version = "0.4.24"
-    static let buildNumber = "31"
+    static let version = "0.4.25"
+    static let buildNumber = "32"
     static let ffmpeg = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/ffmpeg").path
     static let originalProject = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/text2image").path
     static let modelStatusRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Codex/2026-10-05/task/h3-restore", isDirectory: true)
@@ -108,18 +108,27 @@ struct ShotJob: Identifiable, Codable {
     var fixtureDelay: Double = 0.1
     var parameters = GenerationParameters()
     var shortID: String { String(format: "S%02d", shot) }
+    var reviewedInputAwaitingLaunch: Bool {
+        status.isPending && h3AutomaticWorkflow?.phase == "pixel_qa"
+            && h3AutomaticWorkflow?.automaticContinuationAuthorized == true
+            && h3FirstProposal?.reviewReady == true
+    }
     var displayStatusLabel: String {
         if supersededBy != nil { return "历史 · 已重做" }
         if h3VideoRejection != nil { return h3VideoRejection?.actorKind == "user" ? "用户已拒绝 · 待重做" : "候选已拒绝 · 来源为界面操作" }
         if status == .completed,h3VideoReview?.isTrustedAcceptance == true { return h3VideoReview?.provenance?.declaresProductAcceptance == true ? "已接受 · 界面操作" : "接受来源已核对" }
         if status == .completed,h3VideoReview != nil { return "接受来源待核对" }
         if status.isPending,h3FirstProposal != nil,h3AutomaticWorkflow != nil {
+            if reviewedInputAwaitingLaunch { return "待启动" }
             return h3AutomaticWorkflow?.phase == "pixel_qa" ? "检查画面" : "准备中"
         }
         if status == .blocked,let plan = h3QueuePlan,h3FirstProposal == nil { return plan.statusLabel }
         return status.label
     }
     var displayStage: String {
+        // Old persisted stage text may describe a queue pause that has since
+        // been lifted. Keep the audit text, but show current input facts here.
+        if reviewedInputAwaitingLaunch { return "画面检查通过 · 输入与回执保留" }
         if h3FirstProposal != nil { return stage }
         if h3ABConfiguration != nil,status.isPending,h3AutomaticWorkflow == nil,h3InputPreparation?.status != "failed" {
             return "就绪后自动处理输入、生成与检查输出"

@@ -17,7 +17,7 @@ extension TaskStore {
         displayedActiveJob ?? state.jobs.first(where:{ $0.status.isPending && $0.h3AutomaticWorkflow?.phase == "pixel_qa" })
     }
     func workbenchActivity(at now: Date = Date()) -> ActivityPresentation {
-        if let job = statusDisplayJob { return ActivityPresenter.job(job,now:now) }
+        if let job = statusDisplayJob { return ActivityPresenter.job(job,now:now,automaticLaunchesPaused:state.automaticLaunchesPaused == true) }
         if let fault = storageFault {
             return .init(state:"工作区保存失败 · 队列暂停",stage:"保存任务状态",detail:fault,elapsed:"未启动",stageElapsed:nil,
                 lastProgress:"没有新生成进展",nextStep:"查看工作区空间与文件权限，保留原状态和候选。",tone:.failure,symbol:"exclamationmark.circle",shortState:"保存失败")
@@ -56,7 +56,7 @@ extension TaskStore {
         }
         if job.status.isPending,job.h3FirstProposal == nil,let request = job.h3QueuePlan?.dependencyRequestID,
            let previous = currentPlannedJob(request) {
-            var p = ActivityPresenter.job(job,now:now)
+            var p = ActivityPresenter.job(job,now:now,automaticLaunchesPaused:state.automaticLaunchesPaused == true)
             if previous.status == .completed,previous.h3Outcome?.technicalPass == true {
                 if previous.h3VideoRejection != nil {
                     p.state = "前段候选已拒绝 · 等待重做";p.shortState = "已拒绝";p.tone = .attention
@@ -77,7 +77,7 @@ extension TaskStore {
             return p
         }
         if job.status == .completed,let plan = job.h3QueuePlan {
-            var p = ActivityPresenter.job(job,now:now)
+            var p = ActivityPresenter.job(job,now:now,automaticLaunchesPaused:state.automaticLaunchesPaused == true)
             p.stage = "\(job.shortID) 第\(plan.part)段 · 候选已保存"
             if job.supersededBy != nil {
                 p.state = "原候选已重做 · 历史保留";p.shortState = "历史";p.tone = .waiting
@@ -97,6 +97,6 @@ extension TaskStore {
             }
             return p
         }
-        return ActivityPresenter.job(job,now:now)
+        return ActivityPresenter.job(job,now:now,automaticLaunchesPaused:state.automaticLaunchesPaused == true)
     }
 }

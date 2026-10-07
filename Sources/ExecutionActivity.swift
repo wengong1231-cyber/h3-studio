@@ -104,6 +104,7 @@ struct ActivityPresentation {
     var stage: String
     var detail: String
     var elapsed: String
+    var elapsedTitle: String = "已用"
     var stageElapsed: String? = nil
     var lastProgress: String
     var heartbeat: String? = nil
@@ -112,6 +113,7 @@ struct ActivityPresentation {
     var progress: StageProgress? = nil
     var symbol: String
     var shortState: String
+    var elapsedDescription: String { elapsedTitle + " " + elapsed }
 }
 
 enum ActivityPresenter {
@@ -122,13 +124,22 @@ enum ActivityPresenter {
         guard let date else { return "未记录" }
         return duration(now.timeIntervalSince(date)) + "前"
     }
-    static func job(_ job: ShotJob,now: Date) -> ActivityPresentation {
+    static func job(_ job: ShotJob,now: Date,automaticLaunchesPaused: Bool = false) -> ActivityPresentation {
         let a = job.executionActivity,end = job.endedAt ?? a?.endedAt ?? now
-        let elapsed = (job.h3AutomaticWorkflow?.startedAt ?? job.startedAt).map { duration(end.timeIntervalSince($0)) } ?? "未开始"
+        let elapsed: String,elapsedTitle: String
+        if let started = job.h3GenerationStartedAt {
+            // Native start/end events exclude source preparation and input QA.
+            // Decoding belongs to generation; later validation is separate.
+            elapsed = duration((job.h3GenerationEndedAt ?? end).timeIntervalSince(started))
+            elapsedTitle = "生成用时"
+        } else {
+            elapsed = (job.h3AutomaticWorkflow?.startedAt ?? job.startedAt).map { duration(end.timeIntervalSince($0)) } ?? "未开始"
+            elapsedTitle = job.h3AutomaticWorkflow == nil ? "执行用时" : "流程用时"
+        }
         let last = a?.lastProgressAt.map { "最后真实进展 " + $0.formatted(date:.omitted,time:.standard) + " · " + age($0,now:end) } ?? "真实进展时间未上报"
         let heart = a?.lastHeartbeatAt.map { (a?.heartbeatSource ?? "进程") + "心跳 " + age($0,now:end) }
         let stageElapsed = a.map { "本阶段 " + duration(end.timeIntervalSince($0.phaseStartedAt)) }
-        var p = ActivityPresentation(state:"执行中",stage:job.displayStage,detail:"仅显示引擎实际上报的当前阶段。",elapsed:elapsed,stageElapsed:stageElapsed,lastProgress:last,heartbeat:heart,nextStep:nil,tone:.working,progress:job.progress,symbol:"waveform.path",shortState:"运行")
+        var p = ActivityPresentation(state:"执行中",stage:job.displayStage,detail:"仅显示引擎实际上报的当前阶段。",elapsed:elapsed,elapsedTitle:elapsedTitle,stageElapsed:stageElapsed,lastProgress:last,heartbeat:heart,nextStep:nil,tone:.working,progress:job.progress,symbol:"waveform.path",shortState:"运行")
         switch job.status {
         case .completed:
             p.state = "已完成 · 候选已保存";p.shortState = "完成";p.tone = .success;p.symbol = "checkmark.circle.fill";p.progress = nil
@@ -147,7 +158,14 @@ enum ActivityPresenter {
                 p.detail = "当前任务未授权执行，没有加载模型或启动生成。";p.nextStep = "保持等待，查看本任务契约与日志。";p.progress = nil;return p
             }
             if job.h3AutomaticWorkflow?.phase == "pixel_qa" {
-                p.state = "等待助手画面检查";p.shortState = "待检查";p.stage = job.stage;p.tone = .waiting;p.symbol = "eye"
+                if job.reviewedInputAwaitingLaunch {
+                    p.state = automaticLaunchesPaused ? "图审通过 · 后续启动已暂停" : "图审通过 · 等待启动条件"
+                    p.shortState = automaticLaunchesPaused ? "已暂停" : "待启动";p.stage = job.displayStage;p.tone = .waiting;p.symbol = "clock"
+                    p.detail = "输入和画面检查回执已准备，当前没有运行本段视频生成。"
+                    p.nextStep = automaticLaunchesPaused ? "恢复已授权流程后，App继续核对依赖和单GPU资源条件。" : "App按队列顺序核对依赖和单GPU资源条件，无需重复图审。"
+                    p.progress = nil;return p
+                }
+                p.state = "等待助手画面检查";p.shortState = "待检查";p.stage = job.displayStage;p.tone = .waiting;p.symbol = "eye"
                 p.detail = "实际图片已准备，当前没有运行视频生成。";p.nextStep = "助手检查实际图片及提示词后，App自动接续一次。";p.progress = nil;return p
             }
             if job.h3AutomaticWorkflow?.status == "running" || job.h3InputPreparation?.status == "running" { break }

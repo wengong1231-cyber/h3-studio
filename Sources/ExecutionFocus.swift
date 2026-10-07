@@ -56,7 +56,7 @@ enum ExecutionFocusProjector {
         let currentJob = active.first ?? preparing ?? observed
         let current = currentJob.map { job in
             ExecutionCurrentFocus(job:job,mode:job.status == .cancelling ? .cancelling : job.externalHistory != nil ? .observed : job.status == .running ? .generation : .preparation,
-                activity:ActivityPresenter.job(job,now:now))
+                activity:ActivityPresenter.job(job,now:now,automaticLaunchesPaused:automaticLaunchesPaused))
         }
         let evaluated = QueueScheduling.evaluatedPending(jobs,excluding:currentJob?.id,preferFixtures:currentJob?.engine == .fixture,
             reviewExists:reviewExists,alreadyDispatched:alreadyDispatched,inputReviewExists:inputReviewExists)
@@ -89,7 +89,7 @@ extension TaskStore {
             automaticLaunchesPaused:state.automaticLaunchesPaused == true)
         if let id = fidelityJobID,let job = state.jobs.first(where:{ $0.id == id }),let record = job.h3FidelityChecks?.last {
             let activity = ActivityPresentation(state:record.kind.title,stage:record.stage,
-                detail:"原片与拒绝保留 · 实验不授权续段",elapsed:"\(Int(now.timeIntervalSince(record.startedAt)))秒",
+                detail:"原片与拒绝保留 · 实验不授权续段",elapsed:ActivityPresenter.duration(now.timeIntervalSince(record.startedAt)),elapsedTitle:"对照用时",
                 lastProgress:record.progress?.label ?? "等待原生阶段上报",tone:.working,progress:record.progress,symbol:"person.crop.rectangle",shortState:"保真对照")
             projection.current = .init(job:job,mode:record.status == "cancelling" ? .cancelling : .generation,activity:activity)
         }
