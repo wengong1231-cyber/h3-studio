@@ -5,6 +5,7 @@ BUILD_DIR="$TASK_ROOT/build"
 LOCATION_KEY="$(print -rn "$TASK_ROOT" | /usr/bin/shasum -a 256 | cut -c1-12)"
 MODULE_CACHE="$BUILD_DIR/module-cache-$LOCATION_KEY"
 APP_DIR="$BUILD_DIR/release/镜生 H3.app"
+python3 "$TASK_ROOT/scripts/sign-app.py" --check
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$MODULE_CACHE"
 # Xcode 27's SwiftUI @State macros use a compiler subprocess. The outer Codex
 # sandbox rejects nested sandbox-exec, so disable only the compiler's nested
@@ -20,8 +21,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.wengong.WanshenjiH3Studio</string>
   <key>CFBundleExecutable</key><string>WanshenjiH3Studio</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.15</string>
-  <key>CFBundleVersion</key><string>21</string>
+  <key>CFBundleShortVersionString</key><string>0.4.16</string>
+  <key>CFBundleVersion</key><string>22</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><false/>
@@ -41,5 +42,5 @@ except ValueError:
 Path(sys.argv[2]).write_text(json.dumps({'relativeToHome':relative},indent=2),encoding='utf-8')
 PY
 xcrun swift -module-cache-path "$MODULE_CACHE" "$TASK_ROOT/scripts/icon.swift" "$BUILD_DIR/AppIcon.iconset" "$APP_DIR/Contents/Resources/AppIcon.icns"
-/usr/bin/codesign --force --sign - --identifier com.wengong.WanshenjiH3Studio "$APP_DIR"
+python3 "$TASK_ROOT/scripts/sign-app.py" "$APP_DIR"
 print "Staged candidate (not installed or launched): $APP_DIR"

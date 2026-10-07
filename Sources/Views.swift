@@ -71,6 +71,7 @@ struct StudioView: View {
     @State private var adding = false
     @State private var staticInputs = false
     @State private var rejectingCandidate: ShotJob?
+    @State private var fidelityCandidate: ShotJob?
     @State private var metrics = false
     @State private var models = false
     @State private var inspectorTab = 0
@@ -123,6 +124,7 @@ struct StudioView: View {
         .sheet(isPresented: $adding) { AddJobView(store: store) }
         .sheet(isPresented: $staticInputs) { H3StaticInputLibrarySheet(store:store) }
         .sheet(item:$rejectingCandidate) { H3VideoRejectionSheet(store:store,job:$0) }
+        .sheet(item:$fidelityCandidate) { H3FidelitySheet(store:store,jobID:$0.id) }
         .onChange(of:store.navigationIntent?.id) { _,_ in
             guard let location = store.navigationIntent?.destination else { return }
             filter = location.filter;inspectorTab = location.inspectorTab;metrics = location.metrics;models = location.models
@@ -359,6 +361,9 @@ struct StudioView: View {
         var primary: InspectorAction?
         var secondary: [InspectorAction] = []
         var caption: String?
+        if job.h3Binding?.appFirstTask != nil,job.h3VideoRejection != nil,job.supersededBy == nil {
+            secondary.append(InspectorAction(id:"face-fidelity",title:"人脸保真对照",icon:"person.crop.rectangle") { fidelityCandidate = job })
+        }
         if store.canBindStaticInput(job.id) {
             secondary.append(InspectorAction(id:"bind-static-image",title:"绑定完整静态图",icon:"photo.badge.plus") { staticInputs = true })
         }

@@ -22,6 +22,10 @@ import Darwin
     private var lockFD: Int32 = -1
     private var runner: ProcessRunner?
     private var childPID: Int32?
+    var fidelityRunner: ProcessRunner?
+    @Published var fidelityJobID: UUID?
+    var fidelityPreparing = false
+    var fidelityOwnedProcesses: [ProcessIdentity] = []
     private var h3OwnedProcesses: [ProcessIdentity] = []
     private var recoveredH3Identities: [Int32: ProcessIdentity] = [:]
     private var logHandle: FileHandle?
@@ -65,7 +69,7 @@ import Darwin
     var launchCount = 0
     var activeJob: ShotJob? { state.jobs.first(where: { $0.status.isActive && $0.externalHistory == nil }) }
     var observedJob: ShotJob? { state.jobs.first(where: { $0.externalHistory?.observing == true }) }
-    var ownedActiveTask: ShotJob? { activeJob ?? state.jobs.first(where:{ $0.id == abWorkflowID || ($0.id == abPreparationID && ["running","cancelled"].contains($0.h3InputPreparation?.status ?? "")) }) }
+    var ownedActiveTask: ShotJob? { activeJob ?? state.jobs.first(where:{ $0.id == fidelityJobID || $0.id == abWorkflowID || ($0.id == abPreparationID && ["running","cancelled"].contains($0.h3InputPreparation?.status ?? "")) }) }
     var displayedActiveJob: ShotJob? { ownedActiveTask ?? observedJob }
     var selected: ShotJob? { state.jobs.first(where: { $0.id == selectedID }) }
     var queuedCount: Int { state.jobs.filter { $0.status == .queued }.count }
@@ -80,8 +84,8 @@ import Darwin
     var replacementShotCount: Int { Set(currentVideoSegments.map(\.shot)).count }
     var currentVideoSegmentCount: Int { currentVideoSegments.count }
     var staticImageCount: Int { Set(staticAssets.map(\.sha256)).count }
-    var generatorResourcesIdle: Bool { !shuttingDown && !abConfigurationBusy && !historyImportInFlight && !videoReviewRefreshInFlight && observedJob == nil && runner == nil && activeJob == nil && storageFault == nil && recoveredPIDs.isEmpty }
-    var singleGeneratorIdle: Bool { abWorkflowID == nil && generatorResourcesIdle }
+    var generatorResourcesIdle: Bool { fidelityJobID == nil && fidelityRunner == nil && !shuttingDown && !abConfigurationBusy && !historyImportInFlight && !videoReviewRefreshInFlight && observedJob == nil && runner == nil && activeJob == nil && storageFault == nil && recoveredPIDs.isEmpty }
+    var singleGeneratorIdle: Bool { fidelityJobID == nil && fidelityRunner == nil && abWorkflowID == nil && generatorResourcesIdle }
     func canUseS41Resources(_ id: UUID) -> Bool { generatorResourcesIdle && (abWorkflowID == nil || abWorkflowID == id) }
     var canStart: Bool { singleGeneratorIdle && !fixtureQueueCandidates.isEmpty }
     var hasAuthorizedFirstContinuations: Bool {
@@ -167,6 +171,16 @@ import Darwin
             state.jobs[index].executionActivity?.finish(.interrupted,stage:state.jobs[index].stage,at:state.jobs[index].endedAt ?? Date())
         }
         notice = recoveredNotice
+        for i in state.jobs.indices {
+            for j in state.jobs[i].h3FidelityChecks?.indices ?? 0..<0 where state.jobs[i].h3FidelityChecks?[j].isActive == true {
+                if let identity = state.jobs[i].h3FidelityChecks?[j].worker,identity.stillSameProcess {
+                    recoveredPIDs.append(identity.pid);recoveredH3Identities[identity.pid] = identity
+                }
+                state.jobs[i].h3FidelityChecks?[j].status = "interrupted"
+                state.jobs[i].h3FidelityChecks?[j].endedAt = Date()
+                state.jobs[i].h3FidelityChecks?[j].error = "上次保真对照中断，保留原片与实验记录，不自动重试。"
+            }
+        }
         selectedID = state.jobs.first?.id
         let lease = try JSONEncoder().encode(sessionID)
         try lease.write(to: root.appendingPathComponent("owner.json"), options: .atomic)
@@ -174,7 +188,7 @@ import Darwin
         telemetry.ownedPIDs = { [weak self] in
             guard let self else { return [] }
             let workerPID = self.activeJob?.engine == .h3 ? self.activeJob?.workerIdentity.flatMap { $0.stillSameProcess ? $0.pid : nil } : self.activeJob?.workerPID
-            return Array(Set([workerPID, self.childPID].compactMap { $0 } + self.h3OwnedProcesses.filter(\.stillSameProcess).map(\.pid)))
+            return Array(Set([workerPID, self.childPID, self.fidelityRunner?.process.processIdentifier].compactMap { $0 } + (self.h3OwnedProcesses + self.fidelityOwnedProcesses).filter(\.stillSameProcess).map(\.pid)))
         }
         telemetry.onSample = { [weak self] sample in self?.record(sample) }
         telemetry.onCriticalPressure = { [weak self] in
@@ -539,6 +553,7 @@ import Darwin
     }
     func cancel(_ id: UUID,source: String = "application-or-test") {
         guard let index = state.jobs.firstIndex(where: { $0.id == id }), state.jobs[index].externalHistory == nil else { return }
+        if fidelityJobID == id { cancelFidelity(id);return }
         if actionRevisionID == id {
             actionRevisionControl?.cancel();notice = "已取消动作修订；原失败记录、提示词与检查回执保留。";return
         }
@@ -606,6 +621,7 @@ import Darwin
         startupLog.record(.shutdownRequested)
         pauseQueue()
         actionRevisionControl?.cancel()
+        if let id = fidelityJobID { cancelFidelity(id) }
         if let id = abPreparationID { cancel(id,source:"application shutdown during input preparation") }
         if let id = abWorkflowID { cancel(id,source:"application shutdown during automatic workflow") }
         if let active = activeJob { cancel(active.id,source:"application shutdown") }

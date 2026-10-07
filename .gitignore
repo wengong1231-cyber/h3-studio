@@ -8,3 +8,5 @@ Deliverables/
 .library-helpers/
 .env
 .env.*
+__pycache__/
+*.pyc

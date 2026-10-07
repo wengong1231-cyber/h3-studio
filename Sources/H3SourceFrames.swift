@@ -38,22 +38,23 @@ enum H3SourceFrames {
     }
     /// Complete source→destination transform. All source pixels remain inside
     /// the 768×448 canvas; uncovered rows/columns are opaque black padding.
-    static func contain(_ image: CGImage) throws -> Contained {
+    static func contain(_ image: CGImage,canvasWidth: Int = 768,canvasHeight: Int = 448) throws -> Contained {
         let width = image.width,height = image.height
-        guard (1...8192).contains(width),(1...8192).contains(height),
+        guard [(768,448),(1536,896)].contains(where:{ $0.0 == canvasWidth && $0.1 == canvasHeight }),
+              (1...8192).contains(width),(1...8192).contains(height),
               width*height <= 67_108_864,let color = CGColorSpace(name:CGColorSpace.sRGB) else { throw StudioError.invalid("源帧尺寸无法安全归一化。") }
-        let scale = min(768.0/Double(width),448.0/Double(height))
-        let tx = (768.0-Double(width)*scale)/2,ty = (448.0-Double(height)*scale)/2
+        let scale = min(Double(canvasWidth)/Double(width),Double(canvasHeight)/Double(height))
+        let tx = (Double(canvasWidth)-Double(width)*scale)/2,ty = (Double(canvasHeight)-Double(height)*scale)/2
         var transform = vImage_AffineTransform(a:Float(scale),b:0,c:0,d:Float(scale),tx:Float(tx),ty:Float(ty))
         var source = [UInt8](repeating:0,count:width*height*4)
-        var output = [UInt8](repeating:0,count:768*448*4)
+        var output = [UInt8](repeating:0,count:canvasWidth*canvasHeight*4)
         let info = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
         let error = try source.withUnsafeMutableBytes { input -> vImage_Error in
             guard let context = CGContext(data:input.baseAddress,width:width,height:height,bitsPerComponent:8,bytesPerRow:width*4,space:color,bitmapInfo:info) else { throw StudioError.invalid("不能创建 CPU 源帧像素缓冲。") }
             context.draw(image,in:CGRect(x:0,y:0,width:width,height:height))
             return output.withUnsafeMutableBytes { pixels in
                 var from = vImage_Buffer(data:input.baseAddress,height:vImagePixelCount(height),width:vImagePixelCount(width),rowBytes:width*4)
-                var to = vImage_Buffer(data:pixels.baseAddress,height:448,width:768,rowBytes:768*4)
+                var to = vImage_Buffer(data:pixels.baseAddress,height:vImagePixelCount(canvasHeight),width:vImagePixelCount(canvasWidth),rowBytes:canvasWidth*4)
                 let background: [UInt8] = [0,0,0,255]
                 return background.withUnsafeBufferPointer { bg in
                     vImageAffineWarp_ARGB8888(&from,&to,nil,&transform,bg.baseAddress!,vImage_Flags(kvImageHighQualityResampling | kvImageBackgroundColorFill))
@@ -61,7 +62,7 @@ enum H3SourceFrames {
             }
         }
         guard error == kvImageNoError,let provider = CGDataProvider(data:Data(output) as CFData),
-              let normalized = CGImage(width:768,height:448,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:768*4,space:color,bitmapInfo:CGBitmapInfo(rawValue:info),provider:provider,decode:nil,shouldInterpolate:false,intent:.defaultIntent) else {
+              let normalized = CGImage(width:canvasWidth,height:canvasHeight,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:canvasWidth*4,space:color,bitmapInfo:CGBitmapInfo(rawValue:info),provider:provider,decode:nil,shouldInterpolate:false,intent:.defaultIntent) else {
             throw StudioError.invalid("CPU 完整画面归一化失败。")
         }
         return .init(image:normalized,scale:Double(transform.a),translation:[Double(transform.tx),Double(transform.ty)],padding:[tx,ty,tx,ty])

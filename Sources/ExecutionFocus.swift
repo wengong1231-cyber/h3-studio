@@ -81,11 +81,18 @@ extension TaskStore {
         else if !recoveredPIDs.isEmpty { wait = "等待旧自有进程安全退出" }
         else if abConfigurationBusy || backgroundReadVisible(at:now) { wait = "后台正在核对本地记录" }
         else { wait = nil }
-        return ExecutionFocusProjector.project(jobs:state.jobs,ownedWorkflowID:abWorkflowID,preparationID:abPreparationID,
+        var projection = ExecutionFocusProjector.project(jobs:state.jobs,ownedWorkflowID:abWorkflowID,preparationID:abPreparationID,
             resourceIdle:ownedActiveTask == nil && observedJob == nil && wait == nil,globalWait:wait,queuePaused:state.queuePaused,now:now,
             reviewExists:{ FileManager.default.fileExists(atPath:H3QueueExecution.reviewURL(workspace:self.root,id:$0).path) },
             alreadyDispatched:{ self.alreadyDispatched($0) },
             inputReviewExists:{ FileManager.default.fileExists(atPath:self.firstReviewURL($0).path) },
             automaticLaunchesPaused:state.automaticLaunchesPaused == true)
+        if let id = fidelityJobID,let job = state.jobs.first(where:{ $0.id == id }),let record = job.h3FidelityChecks?.last {
+            let activity = ActivityPresentation(state:record.kind.title,stage:record.stage,
+                detail:"原片与拒绝保留 · 实验不授权续段",elapsed:"\(Int(now.timeIntervalSince(record.startedAt)))秒",
+                lastProgress:record.progress?.label ?? "等待原生阶段上报",tone:.working,progress:record.progress,symbol:"person.crop.rectangle",shortState:"保真对照")
+            projection.current = .init(job:job,mode:record.status == "cancelling" ? .cancelling : .generation,activity:activity)
+        }
+        return projection
     }
 }

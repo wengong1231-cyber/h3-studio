@@ -138,6 +138,37 @@ enum WorkspaceMigrationTests {
                 withExtendedLifetime(context) {}
             }
             let (installLegacy, installMigrator) = try fixture("installer")
+            let persistent = CodeSigningIdentity(identifier: AppIdentity.bundleID,
+                designatedRequirement: "identifier \"" + AppIdentity.bundleID + "\" and certificate leaf = H\"" + String(repeating:"b",count:40) + "\"", certificateSHA256: [String(repeating: "a",count:64)], isAdHoc: false,leafCertificateSHA1:String(repeating:"b",count:40))
+            let adhoc = CodeSigningIdentity(identifier: AppIdentity.bundleID,
+                designatedRequirement: "cdhash old-build", certificateSHA256: [], isAdHoc: true)
+            try check("正式安装拒绝临时签名", rejected {
+                _ = try CodeSigningIdentity.validateUpgrade(candidate: adhoc,existing:nil,satisfiesExisting:false,allowInitialMigration:true)
+            }, "没有证书不能通过首次迁移开关绕过签名身份校验")
+            try check("固定身份首次安装",try !CodeSigningIdentity.validateUpgrade(candidate:persistent,existing:nil,satisfiesExisting:false,allowInitialMigration:false),"首次安装无需伪造旧权限")
+            try check("临时身份迁移必须明确",rejected {
+                _ = try CodeSigningIdentity.validateUpgrade(candidate:persistent,existing:adhoc,satisfiesExisting:false,allowInitialMigration:false)
+            },"安装计划先披露一次性身份切换")
+            try check("允许首次切换固定身份",try CodeSigningIdentity.validateUpgrade(candidate:persistent,existing:adhoc,satisfiesExisting:false,allowInitialMigration:true),"首次切换不复制或编辑TCC授权")
+            try check("更新满足旧身份要求",try !CodeSigningIdentity.validateUpgrade(candidate:persistent,existing:persistent,satisfiesExisting:true,allowInitialMigration:false),"不同程序内容仍须满足旧证书身份")
+            try check("同名换证书也拒绝",rejected {
+                _ = try CodeSigningIdentity.validateUpgrade(candidate:persistent,existing:persistent,satisfiesExisting:false,allowInitialMigration:true)
+            },"迁移开关不能覆盖已经固定的签名身份")
+            var forged = persistent;forged.certificateSHA256 = []
+            try check("仅标识符不能冒充固定签名",rejected {
+                _ = try CodeSigningIdentity.validateUpgrade(candidate:forged,existing:persistent,satisfiesExisting:true,allowInitialMigration:true)
+            },"必须包含实际签名证书，禁止identifier-only要求")
+            var weak = persistent;weak.designatedRequirement = "identifier \"" + AppIdentity.bundleID + "\""
+            try check("证书存在也不接受过宽身份要求",!weak.hasPersistentIdentity,"must pin the actual leaf certificate, not just embed any certificate")
+            var foreignSigning = persistent;foreignSigning.identifier = "example.foreign"
+            try check("签名标识符不能更换",rejected {
+                _ = try CodeSigningIdentity.validateUpgrade(candidate:foreignSigning,existing:persistent,satisfiesExisting:true,allowInitialMigration:true)
+            },"固定应用身份也约束签名标识符")
+            let runningApp = URL(fileURLWithPath:CommandLine.arguments[0]).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            let actualIdentity = try CodeSigningIdentity.inspect(runningApp)
+            try check("实际编译应用包含固定签名证书",actualIdentity.hasPersistentIdentity && !actualIdentity.certificateSHA256.isEmpty,
+                "直接读取本次真实签名包；本机自签名链不需要添加系统信任")
+            try check("实际签名身份校验通过",try CodeSigningIdentity.satisfies(runningApp,requirement:actualIdentity.designatedRequirement),"真实证书约束成立，不仅是策略夹具")
             let source = try fakeApp(root.appendingPathComponent("installer/candidate", isDirectory: true), marker: "candidate executable")
             let appRoot = root.appendingPathComponent("installer/user Applications", isDirectory: true)
             let installer = UserAppInstaller(sourceApp: source, applicationsRoot: appRoot, migrator: installMigrator)

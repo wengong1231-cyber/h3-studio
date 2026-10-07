@@ -211,6 +211,13 @@ final class OrbFloatingPanel: NSPanel {
 @main struct StudioEntry {
     @MainActor static func main() {
         let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of:"--h3-fidelity-worker"),index+1 < arguments.count {
+            exit(H3FidelityWorker.run(URL(fileURLWithPath:arguments[index+1]).standardizedFileURL))
+        }
+        if let index = arguments.firstIndex(of:"--fidelity-self-test"),index+1 < arguments.count {
+            Task { @MainActor in exit(await H3FidelitySelfTests.run(root:URL(fileURLWithPath:arguments[index+1]).standardizedFileURL,executable:URL(fileURLWithPath:arguments[0]).standardizedFileURL)) }
+            RunLoop.main.run();return
+        }
         if let index = arguments.firstIndex(of:"--receipt-rebind-self-test"),index+1 < arguments.count {
             Task { @MainActor in exit(await H3ReceiptRebindSelfTests.run(root:URL(fileURLWithPath:arguments[index+1]).standardizedFileURL,executable:URL(fileURLWithPath:arguments[0]).standardizedFileURL)) }
             RunLoop.main.run();return

@@ -10,6 +10,9 @@ struct InstallationPlan: Codable {
     var activeWorkspace: String?
     var legacyMigration: WorkspaceMigrationPlan?
     var existingTarget: Bool
+    var signingIdentity: CodeSigningIdentity?
+    var installedSigningIdentity: CodeSigningIdentity?
+    var initialSigningMigrationRequired: Bool?
     var installedOrLaunched = false
     var systemDatabaseModified = false
 }
@@ -22,6 +25,8 @@ struct InstallationReceipt: Codable {
     var previousAppBackup: String?
     var workspace: String
     var completedAt: Date
+    var signingIdentity: CodeSigningIdentity?
+    var initialSigningIdentityMigration: Bool?
     var launched = false
     var systemDatabaseModified = false
 }
@@ -96,15 +101,30 @@ struct UserAppInstaller {
            fm.fileExists(atPath: legacyHint.appendingPathComponent("state.json").path) {
             migration = try migrator.plan(legacy: legacyHint)
         }
+        let signing = try? CodeSigningIdentity.inspect(sourceApp)
+        let installedSigning = exists ? try? CodeSigningIdentity.inspect(target) : nil
         return InstallationPlan(sourceApp: sourceApp.path, targetApp: target.path, supportRoot: migrator.supportRoot.path,
-            activeWorkspace: settings?.activeWorkspace, legacyMigration: migration, existingTarget: exists)
+            activeWorkspace: settings?.activeWorkspace, legacyMigration: migration, existingTarget: exists,
+            signingIdentity: signing, installedSigningIdentity: installedSigning,
+            initialSigningMigrationRequired: installedSigning?.isAdHoc == true && signing?.hasPersistentIdentity == true)
     }
     // Dependency injection is limited to isolated fixture tests. CLI installation always
     // uses codesign and the fixed user Applications destination, never launches the app.
-    func install(legacyHint: URL?, signatureVerifier: ((URL) throws -> Void)? = nil, failBeforePublish: Bool = false) throws -> InstallationReceipt {
+    func install(legacyHint: URL?, signatureVerifier: ((URL) throws -> Void)? = nil, failBeforePublish: Bool = false,
+                 allowSigningIdentityMigration: Bool = false) throws -> InstallationReceipt {
         _ = try plan(legacyHint: legacyHint)
         guard sourceApp != target else { throw StudioError.invalid("请从候选构建执行安装，不能覆盖正在使用的源应用包。") }
         if let signatureVerifier { try signatureVerifier(sourceApp) } else { try verifySignature(sourceApp) }
+        var signing: CodeSigningIdentity?
+        var identityMigration = false
+        if signatureVerifier == nil {
+            let candidate = try CodeSigningIdentity.inspect(sourceApp)
+            let existing = fm.fileExists(atPath: target.path) ? try CodeSigningIdentity.inspect(target) : nil
+            let matches = try existing.map { try CodeSigningIdentity.satisfies(sourceApp, requirement: $0.designatedRequirement) } ?? false
+            identityMigration = try CodeSigningIdentity.validateUpgrade(candidate: candidate, existing: existing,
+                satisfiesExisting: matches, allowInitialMigration: allowSigningIdentityMigration)
+            signing = candidate
+        }
         let context = try migrator.resolve(legacyHint: legacyHint)
         try fm.createDirectory(at: context.root, withIntermediateDirectories: true)
         let targetWorkspaceLease = try WorkspaceFileLease(context.root.appendingPathComponent(".queue-lock"), create: true)
@@ -134,7 +154,8 @@ struct UserAppInstaller {
         } else { try fm.moveItem(at: staging, to: target) }
         let record = InstallationReceipt(installedApp: target.path,
             executableSHA256: try WorkspaceDigest.sha256(target.appendingPathComponent("Contents/MacOS/WanshenjiH3Studio")),
-            previousAppBackup: backup?.path, workspace: context.root.path, completedAt: Date())
+            previousAppBackup: backup?.path, workspace: context.root.path, completedAt: Date(),
+            signingIdentity: signing, initialSigningIdentityMigration: identityMigration)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(record).write(to: migrator.supportRoot.appendingPathComponent("installation-receipt.json"), options: .atomic)
         return record
@@ -176,7 +197,8 @@ enum WorkspaceCommand {
                 if flag == "--installation-plan" { try emit(installer.plan(legacyHint: legacy)) }
                 else {
                     guard arguments.contains("--apply") else { throw StudioError.invalid("安装需要明确 --apply；先使用 --installation-plan 审查。") }
-                    try emit(installer.install(legacyHint: legacy))
+                    try emit(installer.install(legacyHint: legacy,
+                        allowSigningIdentityMigration: arguments.contains("--allow-signing-identity-migration")))
                 }
             default: break
             }

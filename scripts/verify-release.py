@@ -21,7 +21,7 @@ def identity():
             'files': files, 'executableSHA256': hashlib.sha256(binary.read_bytes()).hexdigest()}
 
 verified = identity()
-names = sys.argv[1:] or ['receipt-rebind', 'ready-frontier', 'execution-focus', 'video-review',
+names = sys.argv[1:] or ['fidelity', 'receipt-rebind', 'ready-frontier', 'execution-focus', 'video-review',
     'action-revision', 'static-input', 'queue-execution', 'execution-activity', 'ui-gpu',
     'startup', 'migration', 'core', 'h3', 'readiness', 'history', 'h3-ab', 'automation',
     'preview', 'first-shot', 'queue']
