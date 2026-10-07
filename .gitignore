@@ -1,0 +1,10 @@
+.build/
+build/
+Data/
+Evidence/
+Deliverables/
+*.app/
+*.DS_Store
+.library-helpers/
+.env
+.env.*
