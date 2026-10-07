@@ -404,6 +404,13 @@ struct StudioView: View {
                 panel.begin { response in if response == .OK,let url = panel.url { Task { do { try await store.importUserVideoAcceptance(url,id:job.id) } catch { store.notice = error.localizedDescription } } } }
             })
             caption = job.h3VideoRejection == nil ? "接受当前所选视频与端帧，一次记录并接续下一段；重做后的新候选独立接受。" : "候选已拒绝，旧验收不能放行续段。重做保留原视频；修订候选需重新绑定实际首图与提示词。"
+        } else if job.status == .completed,job.h3Binding?.appABTask != nil,job.h3QueuePlan == nil {
+            primary = InspectorAction(id:"import-ab-acceptance",title:job.h3ABAcceptance == nil ? "补记既有用户接受" : "核对既有接受来源",icon:"text.bubble",enabled:store.canImportABAcceptance(job.id)) {
+                let panel = NSOpenPanel();panel.allowedContentTypes = [.json];panel.allowsMultipleSelection = false
+                panel.message = "选择包含既有用户原话、来源与本次 A/B 视频指纹的接受记录。只补记原候选，不代表新的视频审查或续段授权。"
+                panel.begin { response in if response == .OK,let url = panel.url { Task { do { try await store.importABAcceptance(url,id:job.id) } catch { store.notice = error.localizedDescription } } } }
+            }
+            caption = "核对原视频、A/B 输入与技术报告，保留补记前的完整任务和用户原话。"
         } else if store.hasAcceptanceRecoveryAction(job) {
             primary = InspectorAction(id:"rebind-acceptance-source",title:"恢复本段",icon:"arrow.clockwise",enabled:store.canRebindAcceptanceSource(job.id) || store.canResumeAcceptanceRebind(job.id)) {
                 Task { await store.rebindAcceptanceSource(job.id) }
@@ -513,6 +520,7 @@ struct StudioView: View {
                 if job.candidate != nil { H3ABReferences(configuration:configuration,preparation:job.h3InputPreparation,terminal:!job.status.isPending) }
                 H3ABTaskTimeline(job:job)
             }
+            if let accepted = job.h3ABAcceptance { H3ABAcceptanceCard(accepted:accepted) }
             if job.h3FirstProposal != nil {
                 if let revision = job.h3FirstProposal?.queueExecution?.actionRevision {
                     VStack(alignment:.leading,spacing:6) {

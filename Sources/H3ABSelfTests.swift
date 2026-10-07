@@ -85,12 +85,14 @@ import CoreGraphics
             let videoHash = try WorkspaceDigest.sha256(URL(fileURLWithPath:binding.clipPath))
             store.retry(id);store.startH3(id,approval:.mockForTests(binding.jobSHA256))
             try check("技术完成不自动重投",store.launchCount == 1 && !store.canRunH3(id) && store.state.queuePaused,"下一镜与新尝试始终需要单独任务")
+            try await H3ABAcceptanceSelfTests.run(store:store,runtime:runtime,check:check)
             store.shutdown();held = nil
             restartContext = (store.root,id,runtime,binding,videoHash)
             }
             let (normalRoot,id,runtime,binding,videoHash) = restartContext!
             let restored = try TaskStore(root:normalRoot,executable:executable,monitoring:false,h3Runtime:runtime)
             try check("重启恢复完整记录不自动启动",restored.state.jobs[0].id == id && restored.state.jobs[0].status == .completed && restored.state.jobs[0].h3ABConfiguration?.revision == 3 && restored.launchCount == 0 && (try WorkspaceDigest.sha256(URL(fileURLWithPath:binding.clipPath))) == videoHash,"旧候选、配置与用户待审状态恢复，无GPU启动")
+            try check("重启保留A/B既有接受及审计",restored.state.jobs[0].h3Outcome?.visualReview == "accepted_existing_user_instruction" && (try H3ABAcceptanceReader.load(job:restored.state.jobs[0],workspace:normalRoot,runtime:runtime)) == restored.state.jobs[0].h3ABAcceptance,"实际落盘再打开，仍绑定同一候选及原用户指令")
             restored.shutdown()
             let (preprocess,preprocessRuntime,preprocessPath,preprocessValue) = try environment("preprocessing");held = preprocess
             var pending = preprocessValue,inputs = pending["inputs"] as! [String:Any]

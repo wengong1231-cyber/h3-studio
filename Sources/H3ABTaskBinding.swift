@@ -82,7 +82,20 @@ struct H3ABTaskBinding: Codable, Equatable {
         let jobURL = directory.appendingPathComponent("job.json");try encoder.encode(job).write(to:jobURL,options:.withoutOverwriting)
         return try load(jobURL,runtime:runtime)
     }
-    static func load(_ url: URL, runtime: H3Runtime, requireFresh: Bool = true) throws -> (H3Binding,H3SingleJob) {
+    /// Old completed A/B jobs predate automaticCheck. Recomputed checks must
+    /// still pass; only their absent historical metadata may differ. Dispatch
+    /// never opts into this read-only compatibility path.
+    static func configurationsMatch(_ parsed: H3ABConfiguration,_ saved: H3ABConfiguration,allowHistoricalInputChecks: Bool) -> Bool {
+        if parsed == saved { return true }
+        guard allowHistoricalInputChecks,parsed.automaticInputsValidated,
+              saved.first.automaticCheck == nil,saved.last.automaticCheck == nil,
+              saved.first.visuallyReviewed,saved.last.visuallyReviewed else { return false }
+        var historical = parsed
+        historical.first.automaticCheck = nil;historical.last.automaticCheck = nil
+        return historical == saved
+    }
+    static func load(_ url: URL, runtime: H3Runtime, requireFresh: Bool = true,allowHistoricalInputChecks: Bool = false) throws -> (H3Binding,H3SingleJob) {
+        guard !allowHistoricalInputChecks || !requireFresh else { throw StudioError.invalid("历史图片检查兼容仅用于读取，不能用于领取新执行。") }
         let fm = FileManager.default
         let job = try JSONDecoder().decode(H3SingleJob.self,from:H3Files.read(url))
         guard let ab = job.app_ab_task,job.version == 2,job.shot_number == 41,job.segment_id == "s41-p01",job.profile == .s41AB,
@@ -107,7 +120,7 @@ struct H3ABTaskBinding: Codable, Equatable {
               job.frozen[configURL.path] == ab.configurationSHA256,job.frozen[descriptor.path] == ab.configuration.sourceSHA256 else { throw StudioError.invalid("App S41 配置快照或指纹变化。") }
         var parsed = try H3ABConfigurationReader.parse(H3Files.read(descriptor),sourcePath:ab.configuration.sourcePath,workDirectory:runtime.workDirectory,mock:runtime.mode == .mock).configuration
         parsed.revision = ab.configuration.revision;parsed.snapshotPath = ab.configuration.snapshotPath
-        guard parsed == ab.configuration else { throw StudioError.invalid("App S41 原始素材、配置与记录不一致。") }
+        guard configurationsMatch(parsed,ab.configuration,allowHistoricalInputChecks:allowHistoricalInputChecks) else { throw StudioError.invalid("App S41 原始素材、配置与记录不一致。") }
         for (path,hash) in job.frozen {
             let file: URL
             if path.hasPrefix(job.output_dir + "/") { file = try H3Files.inside(path,job.output_dir) }

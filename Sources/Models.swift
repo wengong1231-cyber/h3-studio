@@ -4,8 +4,8 @@ enum AppIdentity {
     static let name = "镜生 H3"
     static let bundleID = "com.wengong.WanshenjiH3Studio"
     static let executable = "WanshenjiH3Studio"
-    static let version = "0.4.25"
-    static let buildNumber = "32"
+    static let version = "0.4.26"
+    static let buildNumber = "33"
     static let ffmpeg = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/ffmpeg").path
     static let originalProject = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/text2image").path
     static let modelStatusRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Codex/2026-10-05/task/h3-restore", isDirectory: true)
@@ -86,6 +86,7 @@ struct ShotJob: Identifiable, Codable {
     var h3QueuePlan: H3QueuePlan?
     var h3StaticBinding: H3StaticInputBinding?
     var h3VideoReview: H3VideoReviewState?
+    var h3ABAcceptance: H3ABAcceptanceState?
     var h3VideoRejection: H3VideoRejectionState?
     var h3FidelityChecks: [H3FidelityRecord]?
     var h3InputRecoveries: [H3IndependentInputRecovery]?
@@ -116,6 +117,7 @@ struct ShotJob: Identifiable, Codable {
     var displayStatusLabel: String {
         if supersededBy != nil { return "历史 · 已重做" }
         if h3VideoRejection != nil { return h3VideoRejection?.actorKind == "user" ? "用户已拒绝 · 待重做" : "候选已拒绝 · 来源为界面操作" }
+        if status == .completed,h3ABAcceptance != nil { return "已接受 · 既有用户指令" }
         if status == .completed,h3VideoReview?.isTrustedAcceptance == true { return h3VideoReview?.provenance?.declaresProductAcceptance == true ? "已接受 · 界面操作" : "接受来源已核对" }
         if status == .completed,h3VideoReview != nil { return "接受来源待核对" }
         if status.isPending,h3FirstProposal != nil,h3AutomaticWorkflow != nil {

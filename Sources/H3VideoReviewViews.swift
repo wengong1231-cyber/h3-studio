@@ -1,5 +1,22 @@
 import SwiftUI
 
+struct H3ABAcceptanceCard: View {
+    var accepted: H3ABAcceptanceState
+    var body: some View {
+        VStack(alignment:.leading,spacing:8) {
+            Label("已接受 · 既有用户指令已补记",systemImage:"checkmark.seal").font(.system(size:11,weight:.medium)).foregroundStyle(Color.studioTeal)
+            Text(accepted.receipt.instruction.userQuote).font(.system(size:11)).textSelection(.enabled)
+            Text("来源：" + accepted.receipt.instruction.sourceReference).font(.system(size:9)).foregroundStyle(.secondary).textSelection(.enabled)
+            Text("绑定原 A/B 视频及技术报告；本次补记未新增画面审查、续段授权或成片选择。原视频与补记前任务已留档。")
+                .font(.system(size:10)).foregroundStyle(.secondary).lineSpacing(3)
+            Text("候选 " + String(accepted.receipt.instruction.candidate.clipSHA256.prefix(12)) + " · 回执 " + String(accepted.receiptSHA256.prefix(12)))
+                .font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary)
+            Button("查看接受来源与原任务审计") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath:accepted.receiptPath)]) }
+                .font(.system(size:10))
+        }.padding(12).frame(maxWidth:.infinity,alignment:.leading).background(Color.studioTeal.opacity(0.055)).clipShape(RoundedRectangle(cornerRadius:9))
+    }
+}
+
 struct H3VideoReviewCard: View {
     var job: ShotJob
     var body: some View {
