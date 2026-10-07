@@ -4,8 +4,8 @@ enum AppIdentity {
     static let name = "镜生 H3"
     static let bundleID = "com.wengong.WanshenjiH3Studio"
     static let executable = "WanshenjiH3Studio"
-    static let version = "0.4.23"
-    static let buildNumber = "30"
+    static let version = "0.4.24"
+    static let buildNumber = "31"
     static let ffmpeg = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/ffmpeg").path
     static let originalProject = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/text2image").path
     static let modelStatusRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Codex/2026-10-05/task/h3-restore", isDirectory: true)

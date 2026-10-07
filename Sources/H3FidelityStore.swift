@@ -10,7 +10,7 @@ extension TaskStore {
         // A completed or failed experiment with this input is not silently run
         // again. A changed input has its own immutable task/revision history.
         if job.h3FidelityChecks?.contains(where:{ $0.kind == kind && $0.originalSHA256 == input.originalSHA256 && $0.recipeVersion == H3Fidelity.recipeVersion }) == true { return false }
-        if kind == .motionBaseDetail { return H3Fidelity.baseMotionBaseline(in:job,originalSHA256:input.originalSHA256) != nil }
+        if kind.comparisonKind != nil { return H3Fidelity.comparisonBaseline(for:kind,in:job,originalSHA256:input.originalSHA256) != nil }
         if kind == .motionDetail {
             return job.h3FidelityChecks?.contains(where:{ $0.kind == .codecDetail && $0.status == "completed" && $0.recipeVersion == H3Fidelity.recipeVersion && $0.originalSHA256 == input.originalSHA256 }) == true
         }
@@ -23,7 +23,7 @@ extension TaskStore {
         do {
             let executableHash = try await Task.detached(priority:.utility) { [executable] in try WorkspaceDigest.sha256(executable) }.value
             guard !shuttingDown,fidelityJobID == id else { throw StudioError.invalid("保真准备已取消。") }
-            let baseline = kind == .motionBaseDetail ? H3Fidelity.baseMotionBaseline(in:state.jobs[index],originalSHA256:binding.appFirstTask!.proposal.input!.originalSHA256) : nil
+            let baseline = H3Fidelity.comparisonBaseline(for:kind,in:state.jobs[index],originalSHA256:binding.appFirstTask!.proposal.input!.originalSHA256)
             let request = H3FidelityRequest(id:UUID(),appJobID:id,workspace:root.path,owner:owner,sessionID:sessionID,kind:kind,binding:binding,appExecutableSHA256:executableHash,baseline:baseline)
             let encoder = JSONEncoder();encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
             let bytes = try encoder.encode(request)

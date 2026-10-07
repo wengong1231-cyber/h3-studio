@@ -18,7 +18,9 @@ struct H3FidelitySheet: View {
             }
             Text("先检查静态编解码损失，再检查运动生成漂移。1536输入直接来自完整原图。原模型8步对照沿用此前短段的原图、尺寸、种子和提示词，只移除Turbo加速适配并改为8步，用于检查加速方案是否加重失真，耗时会增加。只有此前运动漂移已留证才可开始；每种方案同图只运行一次，对照不能作为已接受端点。")
                 .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
-            HStack {
+            Text("首尾同图对照仅在8步仍有身份漂移并留证后开放：沿用同图、同Prompt、同种子和8步，只将同一原图也接入末帧。它是22帧约束试验，不是完整碰撞动作，也不是持续身份锁；中间帧仍须检查。")
+                .font(.system(size:12)).foregroundStyle(.secondary).lineSpacing(4)
+            LazyVGrid(columns:Array(repeating:GridItem(.flexible(),alignment:.leading),count:3),alignment:.leading) {
                 ForEach(H3FidelityKind.allCases) { kind in
                     Button(kind.title) { Task { await store.startFidelity(jobID,kind:kind) } }
                         .disabled(!store.canStartFidelity(jobID,kind:kind)).accessibilityIdentifier("fidelity." + kind.rawValue)

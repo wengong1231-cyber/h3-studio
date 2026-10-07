@@ -43,6 +43,9 @@ struct H3FidelityGuidance: Codable, Equatable {
         case .codecDistortion:
             return .init(title:"未通过：编解码后人脸已改变",codeHandling:"这是编解码对照的差异，提示词不会参与这一步。开发需先检查像素归一、潜在帧布局和引擎实现。",nextStep:"保留本次输出并诊断编解码；不能靠修改动作提示词重试。",requiredInputs:"当前无需补图；已有原图、实际输入、输出帧和引擎日志足以开始定位。")
         case .motionIdentityDrift:
+            if kind == .motionKeyframeDetail {
+                return .init(title:"未通过：首尾同图仍改变人脸",codeHandling:"已将同一完整原图真正接入首尾两帧，但中间生成仍改变身份。首尾约束不能当作持续身份锁，也不能凭提示词或超分宣称修好。",nextStep:"保留全部对照，停止同配置重试。先验证本机引擎的持续参考能力与所需组件，能力未具备时明确列出缺口，再决定新的受控方案。",requiredInputs:"当前无需重复补图；已有READY、静态及首尾约束对照足够定位。需要新接触姿态时先由应用工作流准备，并单独检查同脸同构图。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
+            }
             if verifiedDetailImprovement {
                 return .init(title:"未通过：静态细节改善，运动仍改变人脸",codeHandling:"同一原图的高分辨率静态对照已有改善，但运动生成仍改变身份。当前H3没有经过验证的人脸身份约束，不能把更高分辨率或Prompt当作修复完成。",nextStep:"开发先核对首帧条件的实际约束路径；若引擎无法保持身份，需接入可验证的身份参考或受控关键帧方案后再做短段对照。保留当前失败，不原样重跑。",requiredInputs:"当前无需重复补图：已有完整READY、静态对照和运动帧足够定位。后续方案若需要各张脸的独立参考，先从现有原图取得；需要新的接触或回弹姿态时再明确列出。",promptPurpose:"下一方案的动作约束草稿，尚未应用",prompt:motionPrompt(shot:shot))
             }
