@@ -3,22 +3,24 @@ import ImageIO
 import Darwin
 
 enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
-    case codecBaseline, codecDetail, motionDetail, motionBaseDetail, motionKeyframeDetail, motionReferenceDetail
+    case codecBaseline, codecDetail, motionDetail, motionBaseDetail, motionKeyframeDetail, motionReferenceDetail, motionIsolatedBaseline
     var id: String { rawValue }
     var width: Int { self == .codecBaseline ? 768 : 1536 }
     var height: Int { self == .codecBaseline ? 448 : 896 }
     var frames: Int { 22 }
     var isMotion: Bool { self == .motionDetail || usesBaseModel }
-    var usesBaseModel: Bool { self == .motionBaseDetail || self == .motionKeyframeDetail || self == .motionReferenceDetail }
+    var usesIsolatedEngine: Bool { self == .motionReferenceDetail || self == .motionIsolatedBaseline }
+    var usesBaseModel: Bool { self == .motionBaseDetail || self == .motionKeyframeDetail || usesIsolatedEngine }
     var comparisonKind: Self? {
         switch self {
         case .motionBaseDetail: return .motionDetail
         case .motionKeyframeDetail: return .motionBaseDetail
         case .motionReferenceDetail: return .motionKeyframeDetail
+        case .motionIsolatedBaseline: return .motionBaseDetail
         default: return nil
         }
     }
-    var maximumSeconds: TimeInterval { self == .motionKeyframeDetail || self == .motionReferenceDetail ? 2400 : 1800 }
+    var maximumSeconds: TimeInterval { self == .motionKeyframeDetail || usesIsolatedEngine ? 2400 : 1800 }
     func steps(_ proposal: H3FirstProposal) -> Int { usesBaseModel ? 8 : (isMotion ? proposal.profile.steps : 0) }
     var title: String {
         switch self {
@@ -28,6 +30,7 @@ enum H3FidelityKind: String, Codable, CaseIterable, Identifiable {
         case .motionBaseDetail: return "1536 原模型8步对照"
         case .motionKeyframeDetail: return "1536 首尾同图对照"
         case .motionReferenceDetail: return "1536 隔离引擎参考图对照"
+        case .motionIsolatedBaseline: return "1536 新引擎单首帧基线"
         }
     }
 }
@@ -59,6 +62,7 @@ struct H3FidelityRecord: Codable, Equatable, Identifiable {
     var progress: StageProgress?
     var baseline: H3FidelityBaseline?
     var referenceEngine: H3ReferenceEngineBinding?
+    var referenceTrial: H3FidelityBaseline?
     var isActive: Bool { ["starting","running","cancelling"].contains(status) }
     var inputPath: String { directory + "/input.png" }
     var reportPath: String { directory + "/report.json" }
@@ -79,6 +83,7 @@ struct H3FidelityRequest: Codable {
     var appExecutableSHA256: String
     var baseline: H3FidelityBaseline?
     var referenceEngine: H3ReferenceEngineBinding?
+    var referenceTrial: H3FidelityBaseline?
     var directory: String { workspace + "/h3-fidelity/" + appJobID.uuidString + "/" + id.uuidString }
     var url: URL { URL(fileURLWithPath:directory + "/request.json") }
     func ownerPresent() -> Bool {
@@ -97,6 +102,7 @@ struct H3FidelityRequest: Codable {
               record.directory == directory,record.kind == kind,record.recipeVersion == recipeVersion,
               record.baseline == baseline,
               record.referenceEngine == referenceEngine,
+              record.referenceTrial == referenceTrial,
               record.requestSHA256 == H3ABConfigurationReader.digest(bytes),
               parent.status != .cancelled,parent.supersededBy == nil,
               let proposal = binding.appFirstTask?.proposal,proposal.input?.originalSHA256 == record.originalSHA256,
@@ -107,13 +113,23 @@ struct H3FidelityRequest: Codable {
         guard verified.jobSHA256 == binding.jobSHA256,verified.appTaskID == appJobID else {
             throw StudioError.invalid("原任务身份变化，未开始保真对照。")
         }
-        if kind == .motionReferenceDetail {
+        if kind.usesIsolatedEngine {
             guard let referenceEngine,referenceEngine == parent.h3ReferenceEngine,parent.shot == 26,
                   (parent.h3FidelityChecks ?? []).filter({ $0.referenceEngine != nil }).count <= referenceEngine.manifest.maximumTrials else {
                 throw StudioError.invalid("参考对照未绑定App隔离引擎登记，或超过授权次数。")
             }
             try referenceEngine.validate(jobID:appJobID,workspace:workspace,workDirectory:proposal.workDirectory)
         } else if referenceEngine != nil { throw StudioError.invalid("旧对照不能覆盖原任务引擎。") }
+        if kind == .motionIsolatedBaseline {
+            guard let referenceTrial,let referenceEngine,
+                  referenceTrial == H3Fidelity.referenceTrialEvidence(in:parent,originalSHA256:record.originalSHA256),
+                  let prior = parent.h3FidelityChecks?.first(where:{ $0.id == referenceTrial.diagnosticID }) else {
+                throw StudioError.invalid("新版首帧基线需要已完成且记录漂移的同图参考试验，不能跳过检查。")
+            }
+            _ = try H3Fidelity.validateReport(prior,appJobID:appJobID)
+            try H3Fidelity.validateReferenceEvidence(referenceTrial,appJobID:appJobID,originalSHA256:record.originalSHA256,
+                engine:referenceEngine,parentDirectory:URL(fileURLWithPath:directory).deletingLastPathComponent().path)
+        } else if referenceTrial != nil { throw StudioError.invalid("此方案不能冒用参考试验复核依据。") }
         if let comparisonKind = kind.comparisonKind {
             guard let baseline,baseline == H3Fidelity.comparisonBaseline(for:kind,in:parent,originalSHA256:record.originalSHA256),
                   let prior = parent.h3FidelityChecks?.first(where:{ $0.id == baseline.diagnosticID }),
@@ -134,6 +150,36 @@ enum H3Fidelity {
     // This is a STATIC clip round trip, never a generated-motion result.
     static let recipeVersion = 2
     static let codecInputFrames = 34
+    static func referenceTrialEvidence(in job: ShotJob,originalSHA256: String) -> H3FidelityBaseline? {
+        guard let engine = job.h3ReferenceEngine,
+              let prior = job.h3FidelityChecks?.last(where:{
+                  $0.kind == .motionReferenceDetail && $0.status == "completed" && $0.finding == .motionIdentityDrift &&
+                  $0.recipeVersion == recipeVersion && $0.originalSHA256 == originalSHA256 && $0.referenceEngine == engine
+              }),let report = prior.reportSHA256,let observation = prior.observationSHA256,
+              ModelStatusReader.isHash(report,length:64),ModelStatusReader.isHash(observation,length:64) else { return nil }
+        return .init(diagnosticID:prior.id,reportSHA256:report,observationSHA256:observation)
+    }
+    static func validateReferenceEvidence(_ proof: H3FidelityBaseline,appJobID: UUID,originalSHA256: String,
+                                         engine: H3ReferenceEngineBinding,parentDirectory: String) throws {
+        let directory = parentDirectory + "/" + proof.diagnosticID.uuidString
+        let bytes = try H3Files.read(H3Files.inside(directory + "/report.json",directory))
+        let observation = try H3Files.read(H3Files.inside(directory + "/visual-observation.json",directory))
+        guard H3ABConfigurationReader.digest(bytes) == proof.reportSHA256,
+              H3ABConfigurationReader.digest(observation) == proof.observationSHA256,
+              let report = try JSONSerialization.jsonObject(with:bytes) as? [String:Any],
+              let note = try JSONSerialization.jsonObject(with:observation) as? [String:Any],
+              report["diagnosticID"] as? String == proof.diagnosticID.uuidString,
+              note["diagnosticID"] as? String == proof.diagnosticID.uuidString,
+              report["appJobID"] as? String == appJobID.uuidString,note["appJobID"] as? String == appJobID.uuidString,
+              report["originalSHA256"] as? String == originalSHA256,note["originalSHA256"] as? String == originalSHA256,
+              report["kind"] as? String == H3FidelityKind.motionReferenceDetail.rawValue,
+              report["engineRegistrationSHA256"] as? String == engine.receiptSHA256,
+              note["reportSHA256"] as? String == proof.reportSHA256,
+              note["finding"] as? String == H3FidelityFinding.motionIdentityDrift.rawValue,
+              report["videoAccepted"] as? Bool == false,note["videoAccepted"] as? Bool == false else {
+            throw StudioError.invalid("参考试验的任务、图像、引擎、报告或漂移结论不一致，未使用剩余授权。")
+        }
+    }
     static func baseMotionBaseline(in job: ShotJob,originalSHA256: String) -> H3FidelityBaseline? {
         comparisonBaseline(for:.motionBaseDetail,in:job,originalSHA256:originalSHA256)
     }
@@ -268,6 +314,7 @@ enum H3Fidelity {
                   request.id == record.id,request.appJobID == appJobID,request.kind == record.kind,
                   request.baseline != nil,request.baseline == record.baseline,
                   request.referenceEngine == record.referenceEngine,
+                  request.referenceTrial == record.referenceTrial,
                   let proposal = request.binding.appFirstTask?.proposal else { throw StudioError.invalid("原模型对照请求或比较基线发生变化。") }
             let actual = try H3Files.read(H3Files.inside(record.directory + "/pipeline.vpipeline",record.directory))
             let expected = try pipeline(kind:record.kind,proposal:proposal,directory:record.directory)
@@ -290,26 +337,48 @@ enum H3Fidelity {
                     throw StudioError.invalid("首尾同图对照缺少真实末帧绑定，不能冒称持续身份约束。")
                 }
             }
-            if record.kind == .motionReferenceDetail {
+            if record.kind.usesIsolatedEngine {
                 guard let engine = request.referenceEngine,
                       report["helperSHA256"] as? String == engine.manifest.helperSHA256,
                       report["librarySHA256"] as? String == engine.manifest.librarySHA256,
                       report["engineRegistrationSHA256"] as? String == engine.receiptSHA256,
-                      report["effectivePromptSHA256"] as? String == H3ABConfigurationReader.digest(Data(H3ReferenceEngine.prompt(proposal).utf8)),
-                      report["referenceMode"] as? String == "FL2VA-Ref2VA-like-zero-shot",
                       report["nativeSessionDirectory"] as? String == record.directory + "/native-session",
                       report["originalNativeRegistryUnchanged"] as? Bool == true,
-                      report["exactFirstFrameConditioning"] as? Bool == false,
                       report["identityLockVerified"] as? Bool == false else { throw StudioError.invalid("参考对照缺少实际引擎、参考模式或提示词回执。") }
                 try engine.manifest.validateScope(appJobID)
                 let nativeLog = try H3Files.read(H3Files.inside(record.directory + "/native.log",record.directory))
-                guard report["nativeLogSHA256"] as? String == H3ABConfigurationReader.digest(nativeLog),
-                      String(decoding:nativeLog,as:UTF8.self).contains("1 reference on the FL2VA partition -- upstream's Ref2VA-like mode") else {
-                    throw StudioError.invalid("原生日志未证明图片参考实际进入FL2VA参考模式。")
+                guard report["nativeLogSHA256"] as? String == H3ABConfigurationReader.digest(nativeLog) else {
+                    throw StudioError.invalid("隔离引擎原生日志已改变。")
+                }
+                try validateIsolatedMode(record.kind,report:report,log:String(decoding:nativeLog,as:UTF8.self),proposal:proposal)
+                if record.kind == .motionIsolatedBaseline {
+                    guard let proof = request.referenceTrial,
+                          report["referenceTrialID"] as? String == proof.diagnosticID.uuidString,
+                          report["referenceTrialReportSHA256"] as? String == proof.reportSHA256,
+                          report["referenceTrialObservationSHA256"] as? String == proof.observationSHA256 else {
+                        throw StudioError.invalid("新版首帧基线缺少先前参考试验复核依据。")
+                    }
+                    try validateReferenceEvidence(proof,appJobID:appJobID,originalSHA256:record.originalSHA256,
+                        engine:engine,parentDirectory:URL(fileURLWithPath:record.directory).deletingLastPathComponent().path)
                 }
             }
         }
         return bytes
+    }
+    static func validateIsolatedMode(_ kind: H3FidelityKind,report: [String:Any],log: String,proposal: H3FirstProposal) throws {
+        let isReference = kind == .motionReferenceDetail
+        let expectedPrompt = isReference ? H3ReferenceEngine.prompt(proposal) : proposal.prompt
+        guard kind.usesIsolatedEngine,
+              report["effectivePromptSHA256"] as? String == H3ABConfigurationReader.digest(Data(expectedPrompt.utf8)),
+              report["referenceMode"] as? String == (isReference ? "FL2VA-Ref2VA-like-zero-shot" : "FL2VA-single-first-frame-baseline"),
+              report["exactFirstFrameConditioning"] as? Bool == !isReference else {
+            throw StudioError.invalid("隔离引擎条件模式或实际Prompt不同。")
+        }
+        let referenceMarker = "1 reference on the FL2VA partition -- upstream's Ref2VA-like mode"
+        guard isReference ? log.contains(referenceMarker) :
+                (log.contains("VaeEncodeStage('vae-encode-A')") && log.contains("DiffusionConditionerStage('diffusion-conditioner')") && !log.contains(referenceMarker)) else {
+            throw StudioError.invalid("原生日志没有证明本次实际条件路径。")
+        }
     }
 }
 
@@ -383,7 +452,7 @@ enum H3FidelityWorker {
             let native = H3ChildProcess();child = native
             var arguments = ["--memory-cap-mb","12288","--wired-pool-mb","8192","--launch",pipeline.path]
             var nativeDirectory = URL(fileURLWithPath:proposal.workDirectory),registryHash: String?
-            if kind == .motionReferenceDetail {
+            if kind.usesIsolatedEngine {
                 let isolated = try H3ReferenceEngine.prepareSession(workDirectory:proposal.workDirectory,diagnosticDirectory:r.directory)
                 nativeDirectory = isolated.directory;registryHash = isolated.registrySHA256
                 arguments = ["--config",isolated.config.path] + arguments
@@ -435,26 +504,30 @@ enum H3FidelityWorker {
                 report["lastKeyframeInputSHA256"] = inputHash
                 report["persistentIdentityReferenceUsed"] = false
             }
-            if kind == .motionReferenceDetail,let engine = r.referenceEngine {
+            if kind.usesIsolatedEngine,let engine = r.referenceEngine {
                 try engine.validate(jobID:r.appJobID,workspace:r.workspace,workDirectory:proposal.workDirectory)
                 guard let registryHash,try WorkspaceDigest.sha256(H3Files.safe(proposal.workDirectory + "/data.mdb")) == registryHash else {
                     throw StudioError.invalid("原生登记源发生变化，保留隔离对照，不能声称原数据库保持。")
                 }
                 let nativeLog = try H3Files.read(directory.appendingPathComponent("native.log"))
-                guard String(decoding:nativeLog,as:UTF8.self).contains("1 reference on the FL2VA partition -- upstream's Ref2VA-like mode") else {
-                    throw StudioError.invalid("原生执行未记录真实参考分支，不能冒称参考图对照完成。")
-                }
+                let isReference = kind == .motionReferenceDetail
                 report["engineRegistrationSHA256"] = engine.receiptSHA256
                 report["originalTaskHelperSHA256"] = proposal.helperSHA256
-                report["effectivePromptSHA256"] = H3ABConfigurationReader.digest(Data(H3ReferenceEngine.prompt(proposal).utf8))
-                report["referenceMode"] = "FL2VA-Ref2VA-like-zero-shot"
-                report["referenceImageShortEdge"] = 768
-                report["exactFirstFrameConditioning"] = false
+                report["effectivePromptSHA256"] = H3ABConfigurationReader.digest(Data((isReference ? H3ReferenceEngine.prompt(proposal) : proposal.prompt).utf8))
+                report["referenceMode"] = isReference ? "FL2VA-Ref2VA-like-zero-shot" : "FL2VA-single-first-frame-baseline"
+                if isReference { report["referenceImageShortEdge"] = 768 }
+                report["exactFirstFrameConditioning"] = !isReference
                 report["identityLockVerified"] = false
                 report["nativeLogSHA256"] = H3ABConfigurationReader.digest(nativeLog)
                 report["nativeSessionDirectory"] = nativeDirectory.path
                 report["sourceNativeRegistrySHA256"] = registryHash
                 report["originalNativeRegistryUnchanged"] = true
+                if let proof = r.referenceTrial {
+                    report["referenceTrialID"] = proof.diagnosticID.uuidString
+                    report["referenceTrialReportSHA256"] = proof.reportSHA256
+                    report["referenceTrialObservationSHA256"] = proof.observationSHA256
+                }
+                try H3Fidelity.validateIsolatedMode(kind,report:report,log:String(decoding:nativeLog,as:UTF8.self),proposal:proposal)
             }
             if kind.isMotion {
                 let clip = directory.appendingPathComponent("trial.mp4"),audit = try HistoricalClipAudit.capture(clip)

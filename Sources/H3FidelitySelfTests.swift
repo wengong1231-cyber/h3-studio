@@ -101,6 +101,59 @@ import ImageIO
             base["stages"] = baseStages
             try check("对照只改变Turbo和步数",try JSONSerialization.data(withJSONObject:base,options:.sortedKeys) == JSONSerialization.data(withJSONObject:turbo,options:.sortedKeys),"all other stages, input ports, prompt, seed and geometry identical")
             let baseBytes = try H3Fidelity.pipeline(kind:.motionBaseDetail,proposal:proposal,directory:root.path)
+            let isolatedBaseBytes = try H3Fidelity.pipeline(kind:.motionIsolatedBaseline,proposal:proposal,directory:root.path)
+            try check("新版首帧基线管线逐字节沿用旧8步",isolatedBaseBytes == baseBytes,"engine-only comparison: exact same image ports, original prompt, seed, geometry and eight steps")
+            try check("新版基线明确属于隔离额度",H3FidelityKind.motionIsolatedBaseline.usesIsolatedEngine && H3FidelityKind.motionIsolatedBaseline.comparisonKind == .motionBaseDetail && H3FidelityKind.motionIsolatedBaseline.maximumSeconds == 2400,"same global lock and bounded lifetime; compare against old single-first-frame recipe")
+            var referenceProofRecord = used
+            referenceProofRecord.status = "completed";referenceProofRecord.finding = .motionIdentityDrift
+            referenceProofRecord.reportSHA256 = ExecutionFocusSelfTests.hashA;referenceProofRecord.observationSHA256 = ExecutionFocusSelfTests.hashB
+            capped.h3ReferenceEngine = registration;capped.h3FidelityChecks = [referenceProofRecord]
+            try check("新版基线须有参考模式漂移实证",H3Fidelity.referenceTrialEvidence(in:capped,originalSHA256:ExecutionFocusSelfTests.hashB)?.diagnosticID == referenceProofRecord.id,"same registered engine and original")
+            try check("第一条检查后仅余一次额度",H3ReferenceEngine.canUse(registration,job:capped),"does not allocate a separate cap for baseline mode")
+            for invalid in 0..<6 {
+                var bad = referenceProofRecord
+                if invalid == 0 { bad.status = "running" }
+                if invalid == 1 { bad.finding = .needsMoreReview }
+                if invalid == 2 { bad.originalSHA256 = ExecutionFocusSelfTests.hashA }
+                if invalid == 3 { bad.referenceEngine = nil }
+                if invalid == 4 { bad.observationSHA256 = nil }
+                if invalid == 5 { bad.kind = .motionBaseDetail }
+                capped.h3FidelityChecks = [bad]
+                try check("新版基线不跳过参考检查\(invalid)",H3Fidelity.referenceTrialEvidence(in:capped,originalSHA256:ExecutionFocusSelfTests.hashB) == nil,"pending, unreviewed, changed input, unregistered or unrelated experiment cannot unlock")
+            }
+            var finalUse = used;finalUse.kind = .motionIsolatedBaseline;finalUse.status = "cancelled"
+            capped.h3FidelityChecks = [referenceProofRecord,finalUse]
+            try check("参考与基线合并计数且取消仍占额度",!H3ReferenceEngine.canUse(registration,job:capped),"two modes cannot accidentally permit four runs")
+            let proofDirectory = root.appendingPathComponent(referenceProofRecord.id.uuidString)
+            try FileManager.default.createDirectory(at:proofDirectory,withIntermediateDirectories:false)
+            let proofReport: [String:Any] = ["diagnosticID":referenceProofRecord.id.uuidString,"appJobID":authorizedID.uuidString,"originalSHA256":ExecutionFocusSelfTests.hashB,"kind":"motionReferenceDetail","engineRegistrationSHA256":registration.receiptSHA256,"videoAccepted":false]
+            let proofReportBytes = try JSONSerialization.data(withJSONObject:proofReport,options:.sortedKeys)
+            try proofReportBytes.write(to:proofDirectory.appendingPathComponent("report.json"))
+            var proofNote: [String:Any] = ["diagnosticID":referenceProofRecord.id.uuidString,"appJobID":authorizedID.uuidString,"originalSHA256":ExecutionFocusSelfTests.hashB,"reportSHA256":H3ABConfigurationReader.digest(proofReportBytes),"finding":"motionIdentityDrift","videoAccepted":false]
+            func saveProofNote() throws -> H3FidelityBaseline {
+                let bytes = try JSONSerialization.data(withJSONObject:proofNote,options:.sortedKeys)
+                try bytes.write(to:proofDirectory.appendingPathComponent("visual-observation.json"))
+                return .init(diagnosticID:referenceProofRecord.id,reportSHA256:H3ABConfigurationReader.digest(proofReportBytes),observationSHA256:H3ABConfigurationReader.digest(bytes))
+            }
+            let proof = try saveProofNote()
+            try H3Fidelity.validateReferenceEvidence(proof,appJobID:authorizedID,originalSHA256:ExecutionFocusSelfTests.hashB,engine:registration,parentDirectory:root.path)
+            try check("参考前置证据核到文件内容",true,"fixture-only report, source and observation identities match")
+            proofNote["finding"] = "samplePreserved"
+            let wrongFinding = try saveProofNote()
+            try check("更新指纹不能伪造漂移结论",rejected { try H3Fidelity.validateReferenceEvidence(wrongFinding,appJobID:authorizedID,originalSHA256:ExecutionFocusSelfTests.hashB,engine:registration,parentDirectory:root.path) },"semantic review status still checked")
+            proofNote["finding"] = "motionIdentityDrift";_ = try saveProofNote()
+            try check("参考依据不能跨任务",rejected { try H3Fidelity.validateReferenceEvidence(proof,appJobID:UUID(),originalSHA256:ExecutionFocusSelfTests.hashB,engine:registration,parentDirectory:root.path) },"same parent only")
+            try Data("changed evidence".utf8).write(to:proofDirectory.appendingPathComponent("visual-observation.json"))
+            try check("参考检查被替换后安全拦截",rejected { try H3Fidelity.validateReferenceEvidence(proof,appJobID:authorizedID,originalSHA256:ExecutionFocusSelfTests.hashB,engine:registration,parentDirectory:root.path) },"immutable proof digest enforced")
+            var modeReport: [String:Any] = ["effectivePromptSHA256":H3ABConfigurationReader.digest(Data(proposal.prompt.utf8)),"referenceMode":"FL2VA-single-first-frame-baseline","exactFirstFrameConditioning":true]
+            let firstLog = "VaeEncodeStage('vae-encode-A')\nDiffusionConditionerStage('diffusion-conditioner')"
+            try H3Fidelity.validateIsolatedMode(.motionIsolatedBaseline,report:modeReport,log:firstLog,proposal:proposal)
+            try check("首帧基线不冒称参考模式",rejected { try H3Fidelity.validateIsolatedMode(.motionReferenceDetail,report:modeReport,log:firstLog,proposal:proposal) },"mode, prompt and native branch must agree")
+            try check("混入参考分支不能称引擎单变量",rejected { try H3Fidelity.validateIsolatedMode(.motionIsolatedBaseline,report:modeReport,log:firstLog + "1 reference on the FL2VA partition -- upstream's Ref2VA-like mode",proposal:proposal) },"single first-frame baseline excludes reference blocks")
+            modeReport["effectivePromptSHA256"] = H3ABConfigurationReader.digest(Data(H3ReferenceEngine.prompt(proposal).utf8))
+            try check("基线不能偷偷包装Prompt",rejected { try H3Fidelity.validateIsolatedMode(.motionIsolatedBaseline,report:modeReport,log:firstLog,proposal:proposal) },"exact original prompt, not reference wrapper")
+            let baselineFailure = H3FidelityGuidance.make(.motionIdentityDrift,shot:26,kind:.motionIsolatedBaseline,verifiedDetailImprovement:true)
+            try check("第二次失败不提示无限再试",baselineFailure.blocksQuality && baselineFailure.nextStep.contains("授权已用完") && baselineFailure.requiredInputs.contains("无需重复"),"no blind retry or unnecessary source request")
             var anchored = try JSONSerialization.jsonObject(with:H3Fidelity.pipeline(kind:.motionKeyframeDetail,proposal:proposal,directory:root.path)) as! [String:Any]
             var anchoredStages = anchored["stages"] as! [[String:Any]]
             var anchorPorts = anchoredStages[generateIndex]["iports"] as! [[String:Any]]

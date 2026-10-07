@@ -21,8 +21,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.wengong.WanshenjiH3Studio</string>
   <key>CFBundleExecutable</key><string>WanshenjiH3Studio</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.27</string>
-  <key>CFBundleVersion</key><string>34</string>
+  <key>CFBundleShortVersionString</key><string>0.4.28</string>
+  <key>CFBundleVersion</key><string>35</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><false/>

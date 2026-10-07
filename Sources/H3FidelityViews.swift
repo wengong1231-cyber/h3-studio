@@ -27,6 +27,7 @@ struct H3FidelitySheet: View {
                         .font(.system(size:11)).foregroundStyle(.secondary)
                     if let proposal = job?.h3Binding?.appFirstTask?.proposal {
                         Button("复制参考对照Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(H3ReferenceEngine.prompt(proposal),forType:.string) }
+                        Button("复制首帧基线Prompt") { NSPasteboard.general.clearContents();NSPasteboard.general.setString(proposal.prompt,forType:.string) }
                     }
                 } else {
                     Button("登记已授权隔离引擎") { chooseReferenceEngine() }
@@ -34,6 +35,10 @@ struct H3FidelitySheet: View {
                     Text("导入固定版本及明确授权；先核官方签名、现有视觉权重，再开放参考对照。登记不启动GPU。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
                 }
+            }
+            if job?.h3ReferenceEngine != nil {
+                Text("新版单首帧基线使用剩余一次授权：与旧引擎原模型8步对照保持相同图像、种子、原Prompt及单首帧管线，仅切换已登记引擎。先完成参考模式的实际检查才开放；用来区分引擎与参考条件的影响，不是已验证修复。两种隔离方案合计最多两次，失败取消也计数。")
+                    .font(.system(size:11)).foregroundStyle(.secondary)
             }
             LazyVGrid(columns:Array(repeating:GridItem(.flexible(),alignment:.leading),count:3),alignment:.leading) {
                 ForEach(H3FidelityKind.allCases) { kind in
